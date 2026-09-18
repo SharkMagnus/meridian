@@ -556,6 +556,13 @@ function translateResponseFormat(format: unknown): unknown {
   if (typeof format !== "object") return format
   const shape = format as OpenAiResponseFormat
   if (shape.type === "text") return undefined
+  // LOCAL (cycorn): `json_object` is dropped, not rejected. LightRAG 1.5.3
+  // hardcodes response_format={"type":"json_object"} for query-time keyword
+  // extraction with no switch to turn it off, and the upstream 400 made every
+  // /query answer "No relevant context found". Its prompt already demands JSON
+  // and it parses with json_repair, so plain text is what it had before
+  // Meridian grew structured output.
+  if (shape.type === "json_object") return undefined
   // `name` is a client-side label; `strict` has no equivalent - the SDK always
   // validates, which is never weaker than strict asked for.
   if (shape.type === "json_schema") {

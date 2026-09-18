@@ -278,9 +278,9 @@ describe("POST /v1/chat/completions — non-streaming", () => {
     expect(capturedOptions?.outputFormat).toBeUndefined()
   })
 
-  it("rejects response_format json_object instead of silently ignoring it", async () => {
-    // Anthropic has no schema-less JSON mode, so the request cannot be honored.
-    // Failing loudly beats returning prose to a client expecting JSON.
+  it("drops response_format json_object instead of rejecting it (LOCAL)", async () => {
+    // Anthropic has no schema-less JSON mode. LOCAL (cycorn): dropped like
+    // text so LightRAG's hardcoded json_object keyword call still answers.
     mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
     const app = createTestApp()
 
@@ -290,7 +290,8 @@ describe("POST /v1/chat/completions — non-streaming", () => {
       messages: [{ role: "user", content: "Hi" }],
     })
 
-    expect(res.status).toBe(400)
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.outputFormat).toBeUndefined()
   })
 
   it("keeps tool calling and drops the schema when both are sent", async () => {
