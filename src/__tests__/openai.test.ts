@@ -917,14 +917,15 @@ describe("translateOpenAiToAnthropic", () => {
     expect(result!.output_config).toEqual({ format })
   })
 
-  it("forwards json_object intact so the boundary can reject it", () => {
+  it("drops json_object like text (LOCAL: LightRAG keyword extraction)", () => {
     // Not widened into a permissive schema: Anthropic has no schema-less JSON
-    // mode, and accepting it here would promise an enforcement never applied.
+    // mode. Dropped rather than rejected so LightRAG's hardcoded json_object
+    // keyword call gets the plain-text answer it parses with json_repair.
     const result = translateOpenAiToAnthropic({
       messages: [{ role: "user", content: "hi" }],
       response_format: { type: "json_object" },
     })
-    expect(result!.output_config).toEqual({ format: { type: "json_object" } })
+    expect(result!.output_config).toBeUndefined()
   })
 
   it("treats response_format text as no constraint", () => {
