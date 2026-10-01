@@ -88,10 +88,12 @@ describe("name translation under a non-default namespace", () => {
       .toBe("mcp__litellm__read")
   })
 
-  it("leaves a foreign namespace alone under a custom namespace", () => {
-    const { aliasByClientName } = buildPassthroughToolAliases(["mcp__oc__read"], "litellm")
-    // Under the litellm namespace, `mcp__oc__read` is just an ordinary name.
-    expect(aliasByClientName.get("mcp__oc__read")).toBe("mcp__oc__read")
+  it("drops only the mcp__ marker from a foreign namespace under a custom namespace", () => {
+    const { aliasByClientName, clientNameByAlias } = buildPassthroughToolAliases(["mcp__oc__read"], "litellm")
+    // Under the litellm namespace `mcp__oc__read` is foreign: it keeps its
+    // server part, so it is advertised as `mcp__litellm__oc__read`, not doubled.
+    expect(aliasByClientName.get("mcp__oc__read")).toBe("oc__read")
+    expect(resolveClientToolName("mcp__litellm__oc__read", clientNameByAlias, "litellm")).toBe("mcp__oc__read")
   })
 })
 

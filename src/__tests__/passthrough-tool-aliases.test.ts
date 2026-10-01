@@ -53,9 +53,31 @@ describe("buildPassthroughToolAliases", () => {
     expect(`${PASSTHROUGH_MCP_PREFIX}read`).toBe("mcp__oc__read")
   })
 
-  it("leaves a foreign mcp__ prefix alone — only our own namespace collides", () => {
-    const { aliasByClientName } = buildPassthroughToolAliases(["mcp__zed__read"])
-    expect(aliasByClientName.get("mcp__zed__read")).toBe("mcp__zed__read")
+  it("strips a foreign mcp__ marker too, keeping the server part that tells tools apart", () => {
+    // Hermes re-exports every MCP tool as `mcp__<server>__<tool>`; nested under
+    // our server that read `mcp__oc__mcp__zed__read`, a name the model rewrote
+    // to one the client never declared (verified live, 2026-10-01).
+    const { aliasByClientName, clientNameByAlias } = buildPassthroughToolAliases([
+      "mcp__zed__read",
+      "mcp__hermes__read",
+    ])
+    expect(aliasByClientName.get("mcp__zed__read")).toBe("zed__read")
+    expect(aliasByClientName.get("mcp__hermes__read")).toBe("hermes__read")
+    expect(`${PASSTHROUGH_MCP_PREFIX}zed__read`).toBe("mcp__oc__zed__read")
+    // Both shapes the SDK emits resolve back to the declared name.
+    expect(resolveClientToolName("mcp__oc__zed__read", clientNameByAlias)).toBe("mcp__zed__read")
+    expect(resolveClientToolName("zed__read", clientNameByAlias)).toBe("mcp__zed__read")
+    expect(createPassthroughReplayToolNameRenderer(["mcp__zed__read"])("mcp__zed__read")).toBe("mcp__oc__zed__read")
+  })
+
+  it("never lets a foreign-namespaced name steal a plain tool's identity either", () => {
+    const { aliasByClientName, clientNameByAlias } = buildPassthroughToolAliases([
+      "zed__read",
+      "mcp__zed__read",
+    ])
+    expect(aliasByClientName.get("zed__read")).toBe("zed__read")
+    expect(aliasByClientName.get("mcp__zed__read")).toBe("zed__read_2")
+    expect(clientNameByAlias.get("zed__read_2")).toBe("mcp__zed__read")
   })
 
   it("never lets an escaped name steal an identity a plain tool declared", () => {
@@ -148,6 +170,14 @@ describe("createPassthroughMcpServer aliasing", () => {
     expect(mcp.toolNames).toEqual(["mcp__oc__read"])
     expect(mcp.toolNames).not.toContain("mcp__oc__mcp__oc__read")
     expect(mcp.clientNameByAlias.get("read")).toBe("mcp__oc__read")
+  })
+
+  it("advertises a foreign-namespaced tool under a single namespace", () => {
+    const mcp = createPassthroughMcpServer([
+      { name: "mcp__jev_camofox__browser_do", description: "do", input_schema: schema },
+    ])
+    expect(mcp.toolNames).toEqual(["mcp__oc__jev_camofox__browser_do"])
+    expect(mcp.clientNameByAlias.get("jev_camofox__browser_do")).toBe("mcp__jev_camofox__browser_do")
   })
 
   it("leaves an ordinary tool set byte-identical", () => {

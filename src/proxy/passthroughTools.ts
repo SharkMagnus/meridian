@@ -577,6 +577,9 @@ export function stripMcpPrefix(toolName: string, serverName: string = PASSTHROUG
   return toolName
 }
 
+/** The CLI's MCP namespace marker: every `mcp__<server>__<tool>` name starts with it. */
+const MCP_NAMESPACE_MARKER = "mcp__"
+
 export interface PassthroughToolAliases {
   /** SDK-side name to register a tool under, by the client's declared name. */
   aliasByClientName: ReadonlyMap<string, string>
@@ -603,6 +606,19 @@ export interface PassthroughToolAliases {
  * never steal a name a plain tool declared; a genuine clash falls back to a
  * numbered suffix, which the reverse map still resolves exactly.
  *
+ * A client tool whose name carries a FOREIGN namespace (`mcp__hermes__read`,
+ * the shape Hermes gives every MCP tool it re-exports) nests the same way and
+ * is advertised as `mcp__oc__mcp__hermes__read`. The CLI does dispatch that
+ * doubled name when the model spells it exactly — but Sonnet 5 rewrites it.
+ * Verified 2026-10-01 against CLI 2.1.284 by replaying a live 174-tool request
+ * with 127 such names: the model called `browser_do`, a name the client never
+ * declared, 5 times out of 5; the CLI refused it before the PreToolUse hook,
+ * nothing was captured, and the turn died at the maxTurns cap. With only the
+ * `mcp__` marker removed from those names the same request succeeded 3 of 3.
+ * So any name starting with the marker is aliased: our own namespace is
+ * dropped whole, a foreign one keeps its server part (`hermes__read`), which
+ * still tells two servers' same-named tools apart.
+ *
  * Ordinary tool sets alias to themselves, leaving model-visible names — and so
  * the prompt cache — byte-identical.
  */
@@ -611,22 +627,24 @@ export function buildPassthroughToolAliases(
   serverName: string = PASSTHROUGH_MCP_NAME,
 ): PassthroughToolAliases {
   const PREFIX = passthroughMcpPrefix(serverName)
+  const needsAlias = (name: string) => name.startsWith(MCP_NAMESPACE_MARKER)
   const aliasByClientName = new Map<string, string>()
   const clientNameByAlias = new Map<string, string>()
   const ordered = [...names].sort((a, b) => a.localeCompare(b))
   for (const name of ordered) {
-    if (name.startsWith(PREFIX)) continue
+    if (needsAlias(name)) continue
     aliasByClientName.set(name, name)
     clientNameByAlias.set(name, name)
   }
   for (const name of ordered) {
-    if (!name.startsWith(PREFIX)) continue
+    if (!needsAlias(name)) continue
     if (aliasByClientName.has(name)) continue
     // Strip EVERY leading copy, not just one: a name that is already doubled
-    // would otherwise alias straight back to the undispatchable form.
+    // would otherwise alias straight back to the undispatchable form. Our own
+    // namespace goes as a whole; a foreign one loses only the marker.
     let base = name
-    while (base.startsWith(PREFIX)) {
-      base = base.slice(PREFIX.length)
+    while (base.startsWith(MCP_NAMESPACE_MARKER)) {
+      base = base.startsWith(PREFIX) ? base.slice(PREFIX.length) : base.slice(MCP_NAMESPACE_MARKER.length)
     }
     if (!base) base = "tool"
     let alias = base
