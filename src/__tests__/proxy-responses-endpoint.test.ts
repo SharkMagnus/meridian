@@ -21,6 +21,8 @@ import {
 } from "./helpers"
 
 let capturedOptions: any[] = []
+// When set, the mock SDK ends the turn with a result carrying this structured_output.
+let mockStructuredOutput: unknown = undefined
 
 installSdkMock(() => ({
   query: (opts: any) => {
@@ -55,6 +57,9 @@ installSdkMock(() => ({
           usage: { input_tokens: 11, output_tokens: 4 },
         },
         session_id: sessionId,
+      }
+      if (mockStructuredOutput !== undefined) {
+        yield { type: "result", subtype: "success", is_error: false, structured_output: mockStructuredOutput }
       }
     })()
   },
@@ -339,5 +344,80 @@ describe("/v1/responses cost estimate for GPT model ids", () => {
     const estimate = computeCostEstimate([metric!])
     expect(estimate.byModel["gpt-5.5"]!.estimatedUsd).toBeNull()
     expect(estimate.unpricedRequestCount).toBe(1)
+  })
+})
+
+// The Vercel AI SDK's OpenAI provider (v2+) sends structured output through
+// the Responses API as `text.format`. Before this was translated, the schema
+// was dropped and the caller got prose where it expected JSON.
+describe("/v1/responses structured output (text.format)", () => {
+  const schema = {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+    additionalProperties: false,
+  }
+
+  beforeEach(() => {
+    clearSessionCache()
+    capturedOptions = []
+    mockStructuredOutput = undefined
+  })
+
+  it("carries a json_schema format to the SDK and returns the validated JSON", async () => {
+    mockStructuredOutput = { answer: "42" }
+    const app = createTestApp()
+    const res = await postResponses(app, {
+      model: "claude-sonnet-5",
+      input: "hi",
+      stream: false,
+      text: { format: { type: "json_schema", name: "answer", strict: true, schema } },
+    })
+
+    expect(capturedOptions[0]?.outputFormat).toEqual({ type: "json_schema", schema })
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    const msg = body.output.find((o: any) => o.type === "message")
+    expect(JSON.parse(msg.content[0].text)).toEqual({ answer: "42" })
+  })
+
+  it("treats a text format and a null format as plain output", async () => {
+    const app = createTestApp()
+    for (const format of [{ type: "text" }, null]) {
+      capturedOptions = []
+      const res = await postResponses(app, { model: "claude-sonnet-5", input: "hi", stream: false, text: { format } })
+      expect(res.status).toBe(200)
+      expect(capturedOptions[0]?.outputFormat).toBeUndefined()
+    }
+  })
+
+  it("drops the schema instead of failing when tools are present", async () => {
+    const app = createTestApp()
+    const res = await postResponses(app, {
+      model: "claude-sonnet-5",
+      input: "hi",
+      stream: false,
+      tools: [{ type: "function", name: "lookup", parameters: { type: "object", properties: {} } }],
+      text: { format: { type: "json_schema", name: "answer", schema } },
+    })
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions[0]?.outputFormat).toBeUndefined()
+  })
+
+  it("rejects json_object, naming the client's own field", async () => {
+    const app = createTestApp()
+    const res = await postResponses(app, {
+      model: "claude-sonnet-5",
+      input: "hi",
+      stream: false,
+      text: { format: { type: "json_object" } },
+    })
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as any
+    expect(body.error.type).toBe("invalid_request_error")
+    expect(body.error.message).toContain("text.format.type")
+    expect(capturedOptions).toHaveLength(0)
   })
 })

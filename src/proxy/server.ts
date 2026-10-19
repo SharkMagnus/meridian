@@ -10953,6 +10953,26 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
       )
     }
 
+    // Structured output (`text.format`), validated here for the same reason
+    // and with the same tools rule as /v1/chat/completions: `text.format` was
+    // dropped entirely before, so tool-calling clients (Codex) worked, and
+    // dropping the schema keeps them working where 400ing would not.
+    if (anthropicBody.output_config?.format !== undefined) {
+      const hasTools = Array.isArray(anthropicBody.tools) && anthropicBody.tools.length > 0
+      if (hasTools) {
+        const { format: _unsupportedWithTools, ...rest } = anthropicBody.output_config
+        anthropicBody.output_config = Object.keys(rest).length > 0 ? rest : undefined
+        claudeLog("responses.structured_output_dropped", { reason: "tools_present" })
+      }
+      const parsed = parseOutputFormat(anthropicBody.output_config, anthropicBody.tools, "responses")
+      if (!parsed.ok) {
+        return c.json(
+          { error: { type: "invalid_request_error", message: parsed.message, code: null } },
+          400
+        )
+      }
+    }
+
     const internalHeaders: Record<string, string> = {
       "Content-Type": "application/json",
       "x-meridian-agent": "codex",
