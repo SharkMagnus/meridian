@@ -120,6 +120,8 @@ export interface ResponsesRequest {
   temperature?: number
   top_p?: number
   reasoning?: { effort?: string }
+  /** `text.format` requests structured output: `{type: "json_schema", name, schema, strict}`. */
+  text?: { format?: unknown; [k: string]: unknown }
   stream?: boolean
   [k: string]: unknown
 }
@@ -497,6 +499,27 @@ function mapToolChoice(tc: unknown): AnthropicRequestBody["tool_choice"] {
 }
 
 /**
+ * Map the Responses API's `text.format` onto Anthropic's `output_config.format`,
+ * as translateResponseFormat (./openai) does for Chat Completions'
+ * `response_format`. The Responses shape carries the schema on the format
+ * object itself (`{type: "json_schema", name, schema, strict}`), not under a
+ * nested `json_schema` key. `name` is a client-side label and `strict` has no
+ * equivalent: the SDK always validates, which is never weaker than strict.
+ *
+ * `text` means plain output, and null is omission. Anything else is forwarded
+ * so parseOutputFormat rejects it (e.g. `json_object`, which has no
+ * schema-less Anthropic equivalent) instead of it being silently ignored.
+ */
+function translateResponsesTextFormat(format: unknown): unknown {
+  if (format === undefined || format === null) return undefined
+  if (typeof format !== "object") return format
+  const shape = format as { type?: unknown; schema?: unknown }
+  if (shape.type === "text") return undefined
+  if (shape.type === "json_schema") return { type: "json_schema", schema: shape.schema }
+  return { type: shape.type }
+}
+
+/**
  * Translate a Responses request to an Anthropic /v1/messages body.
  * Returns null when `input` is missing (invalid request).
  */
@@ -630,6 +653,8 @@ export function translateResponsesToAnthropic(body: ResponsesRequest): Anthropic
   if (body.temperature !== undefined) result.temperature = body.temperature
   if (body.top_p !== undefined) result.top_p = body.top_p
   if (body.reasoning?.effort !== undefined) result.reasoning_effort = body.reasoning.effort
+  const outputFormat = translateResponsesTextFormat(body.text?.format)
+  if (outputFormat !== undefined) result.output_config = { format: outputFormat }
 
   return result
 }
