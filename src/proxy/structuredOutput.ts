@@ -22,7 +22,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * `response_format` into this shape before validating, so it asks for its own
  * field paths and errors point at what the client actually sent.
  */
-export type OutputFormatDialect = "anthropic" | "openai"
+export type OutputFormatDialect = "anthropic" | "openai" | "responses"
 
 const ERROR_PATHS = {
   anthropic: {
@@ -34,6 +34,11 @@ const ERROR_PATHS = {
     format: "response_format",
     type: "response_format.type",
     schema: "response_format.json_schema.schema",
+  },
+  responses: {
+    format: "text.format",
+    type: "text.format.type",
+    schema: "text.format.schema",
   },
 } as const
 
