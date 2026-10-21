@@ -125,7 +125,11 @@ export class IdleStallTracker {
       return remember({
         status: 504,
         type: "upstream_timeout",
-        message: `Upstream stalled: no data for ${sinceLastMs}ms`,
+        // A streaming turn already committed 200, so this reaches the client as
+        // an error frame with no status. Clients that classify by message text
+        // (pi-ai/dsh) only retry it when the words "timed out" are present, and
+        // the terminal message below must keep avoiding them.
+        message: `Upstream timed out: no data for ${sinceLastMs}ms`,
         consecutive,
         terminal: false,
       })
