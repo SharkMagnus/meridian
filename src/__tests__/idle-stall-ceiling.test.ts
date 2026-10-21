@@ -36,6 +36,15 @@ describe("IdleStallTracker", () => {
     expect(v.type).toBe("invalid_request_error")
   })
 
+  // Mid-stream errors carry no status, so text-classifying clients decide on
+  // the wording alone (pi-ai/dsh's timeout pattern, copied here).
+  it("words a retryable stall as a timeout and the terminal one not", () => {
+    const timeout = /\btime(?:d)?\s*out\b|timeout/i
+    const t = new IdleStallTracker(2, 10)
+    expect(t.record("sess-a", IDLE, SINCE).message).toMatch(timeout)
+    expect(t.record("sess-a", IDLE, SINCE).message).not.toMatch(timeout)
+  })
+
   it("preserves its classified verdict through the non-stream error boundary", () => {
     const verdict = new IdleStallTracker(1, 10).record("sess-a", IDLE, SINCE)
     const error = new IdleStallCeilingError(verdict)
