@@ -175,6 +175,16 @@ function forwardingHooks(hooks: Options["hooks"]): { table: Options["hooks"]; bi
   return { table: table as HookTable, bind: (next) => { target = next } }
 }
 
+/**
+ * The key a process is reserved under: what a request knows about itself
+ * before its options exist. It only has to steer a request to a process that
+ * probably fits; the fingerprint at claim decides.
+ */
+export function warmHint(profileId: string, model: string, systemText: string | undefined): string {
+  return createHash("sha256").update(profileId).update("\0").update(model).update("\0").update(systemText ?? "")
+    .digest("hex").slice(0, 32)
+}
+
 type EntryState = "warming" | "idle" | "reserved" | "claimed" | "closed"
 
 interface Entry {
