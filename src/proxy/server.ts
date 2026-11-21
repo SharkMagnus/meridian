@@ -34,7 +34,7 @@ import { socketActivationFd, parseIdleExitSeconds, isModelRequestPath } from "./
 import type { Server } from "node:http"
 import { join } from "node:path"
 import { configPath } from "../configDir"
-import { query } from "@anthropic-ai/claude-agent-sdk"
+import { query, startup } from "@anthropic-ai/claude-agent-sdk"
 import { rateLimitStore } from "./rateLimitStore"
 import { guardUpstreamIdle, UpstreamIdleError, type LateIdleDeadline } from "./streamIdleGuard"
 import { IdleStallCeilingError, IdleStallTracker, idleStallRequestKey } from "./idleStallCeiling"
@@ -305,6 +305,7 @@ import {
   type TranscriptLocator,
 } from "./sessionLifecycle"
 import { createSdkProcessGate } from "./session/sdkProcessGate"
+import { createWarmPool, type WarmClaim } from "./warmPool"
 import {
   admitSessionStoreWrite, bookkeepingMode, checkpointProxyBookkeeping,
   initializeProxyBookkeeping as initializeProxyBookkeepingRuntime, retainProxyBookkeeping, closeProxyBookkeepingWhenSettled,
@@ -389,6 +390,11 @@ const SHUTDOWN_CLEANUP_SLOW_MS = 2_000
 
 interface RequestMeta {
   requestId: string
+  /**
+   * Set when this turn prepared a fresh session: the key a pre-started
+   * subprocess is reserved under, and under which a replacement is started.
+   */
+  warmHint?: string
   endpoint: string
   queueEnteredAt: number
   sessionQueueWaitMs: number
@@ -1037,6 +1043,24 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
   const sdkSemaphore = finalConfig.maxConcurrent !== undefined
     ? new AbortableSemaphore(finalConfig.maxConcurrent)
     : getProcessSdkSemaphore()
+  // Pre-started subprocesses for fresh, tool-less turns (see warmPool.ts).
+  // Their gates carry no transcript lease until a request claims them: an idle
+  // process has written nothing, so there is nothing to fence yet.
+  const warmPool = envBool("WARM_POOL")
+    ? createWarmPool({
+        maxIdle: Math.max(1, envInt("WARM_POOL_MAX", 2)),
+        idleMs: Math.max(1_000, envInt("WARM_POOL_IDLE_MS", 600_000)),
+        reserveMs: 120_000,
+      }, {
+        startup,
+        createGate: (onStderr) => createSdkProcessGate(
+          join(getSessionStoreDir(), "sdk-process-gates"),
+          () => Promise.resolve(),
+          onStderr,
+        ),
+        log: (event, fields) => claudeLog(event, fields),
+      })
+    : undefined
   const responseCompletions = new WeakMap<Response, Promise<void>>()
 
   // Graceful shutdown (#drain): once true, handleWithQueue fast-fails new
@@ -1292,7 +1316,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     const keepalive = requestMeta.cacheKeepalive
     if (!keepalive) {
       try {
-        yield* runGatedSdkQuery(params, signal, lease, mode, activeLocators)
+        yield* runGatedSdkQuery(params, signal, lease, mode, activeLocators, requestMeta.warmHint)
       } finally {
         requestMeta.sdkActiveDurationMs += Date.now() - startedAt
       }
@@ -1310,7 +1334,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     cacheKeepalive.noteTurnStart(keepalive.key, startedAt)
     let cacheUsage: CacheTierUsage | undefined
     try {
-      for await (const message of runGatedSdkQuery(params, signal, lease, mode, activeLocators)) {
+      for await (const message of runGatedSdkQuery(params, signal, lease, mode, activeLocators, requestMeta.warmHint)) {
         // Only usage that breaks cache writes down by tier says anything.
         const usage = cacheTierUsageOf(message)
         if (usage?.cache_creation) cacheUsage = usage
@@ -1342,8 +1366,10 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     lease: SemaphoreLease,
     mode: string,
     activeLocators: readonly TranscriptLocator[],
+    warmHint?: string,
   ) {
     let sdkQuery: ReturnType<typeof query> | undefined
+    let warmClaim: WarmClaim | undefined
     let activeTranscriptLease: Awaited<ReturnType<typeof acquireActiveTranscriptLease>> | undefined
     let processGate: Awaited<ReturnType<typeof createSdkProcessGate>> | undefined
     let writerJoined = true
@@ -1358,7 +1384,24 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
       signal.throwIfAborted()
       // Unit SDK doubles never create an OS child. Production and real E2E runs
       // always use the gated exact-incarnation writer path.
-      if (process.env.MERIDIAN_TEST_DISABLE_SDK_PROCESS_GATE !== "1") {
+      // A process reserved for this session id is either claimed here or
+      // closed by the claim, so a cold start below never shares the id with a
+      // live warm process.
+      if (warmPool && warmHint !== undefined) {
+        warmClaim = await warmPool.claim(params.options?.sessionId, signal, params.options)
+      }
+      if (warmClaim) {
+        processGate = warmClaim.gate
+        if (activeTranscriptLease) {
+          await attachActiveTranscriptExecutor(
+            activeTranscriptLease,
+            processGate.executor,
+            admissionLifecycleOptions,
+            processGate.recoverableAfterCrash,
+          )
+        }
+        claudeLog("warm_pool.hit", { mode, sessionId: warmClaim.sessionId, idleMs: warmClaim.idleMs })
+      } else if (process.env.MERIDIAN_TEST_DISABLE_SDK_PROCESS_GATE !== "1") {
         const writerLease = activeTranscriptLease
         processGate = await createSdkProcessGate(
           join(getSessionStoreDir(), "sdk-process-gates"),
@@ -1371,7 +1414,10 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         params.options.spawnClaudeCodeProcess = processGate.spawnClaudeCodeProcess
       }
       signal.throwIfAborted()
-      sdkQuery = query(params)
+      // Started alongside this turn rather than after it, so the replacement
+      // is ready by the time a client that waits for the answer sends its next.
+      if (warmPool && warmHint !== undefined && !draining) warmPool.refill(warmHint, params.options)
+      sdkQuery = warmClaim ? warmClaim.query(params.prompt) : query(params)
       // Read outside the idle guard, never between it and the query: the guard
       // tears its source down without awaiting it, and a generator in between
       // would hold that teardown behind a pull that may never settle.
@@ -4216,7 +4262,11 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         // Preallocate every Meridian-created transcript, not only resumed
         // forks. Otherwise a crash after SDK creation but before the first event
         // leaves an ownerless transcript that reconcile/GC cannot discover.
-        managedForkTarget = transcriptLocator(randomUUID())
+        // A pre-started subprocess already carries its session id, so the
+        // transcript is prepared under that one. The launch site checks the
+        // process against the options this turn ends up building.
+        requestMeta.warmHint = `${profile.id}|${model}|${stream ? "stream" : "non-stream"}`
+        managedForkTarget = transcriptLocator(warmPool?.reserve(requestMeta.warmHint) ?? randomUUID())
         managedFreshTarget = true
         releaseManagedForkPins = pinActiveSessionGcLocators(managedForkTarget)
         managedForkTarget = await prepareForkForPublication(managedForkTarget, admissionLifecycleOptions)
@@ -12464,6 +12514,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     // Held requests leave admission with 503; they remain owned through finally.
     admissionHold.end("shutdown")
     cacheKeepalive.stop()
+    void warmPool?.stop()
     antigravity?.beginDrain?.()
     chatGptLoginClosed = chatGptLogin?.close()
   }
