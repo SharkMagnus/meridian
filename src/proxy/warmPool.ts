@@ -33,6 +33,13 @@ const PER_REQUEST_FIELDS = new Set(["abortController", "stderr", "spawnClaudeCod
  * Fields that tie a subprocess to an existing session or to live objects of
  * one request. A request carrying any of them is never served warm.
  */
+/**
+ * Env the SDK writes into `process.env` on its first query, so it is missing
+ * from the first turn's options and present in every later one. It says
+ * nothing about how the subprocess behaves.
+ */
+const SDK_WRITTEN_ENV = new Set(["CLAUDE_AGENT_SDK_VERSION"])
+
 const INELIGIBLE_FIELDS = ["resume", "resumeSessionAt", "forkSession", "continue", "canUseTool", "agents"] as const
 
 function stableStringify(value: unknown): string | undefined {
@@ -111,7 +118,11 @@ export function warmShape(options: Options | undefined): WarmShape | undefined {
     if (key === "mcpServers") continue
     template[key] = value
   }
-  const body = stableStringify(template)
+  const env = template.env
+  const comparable = env && typeof env === "object"
+    ? { ...template, env: Object.fromEntries(Object.entries(env).filter(([name]) => !SDK_WRITTEN_ENV.has(name))) }
+    : template
+  const body = stableStringify(comparable)
   const layout = hookLayout(options.hooks)
   if (body === undefined || layout === undefined) return undefined
   const digest = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 16)
@@ -119,7 +130,7 @@ export function warmShape(options: Options | undefined): WarmShape | undefined {
   for (const [key, value] of Object.entries(template)) {
     if (key === "env" && value && typeof value === "object") {
       for (const [name, item] of Object.entries(value as Record<string, unknown>)) {
-        if (item !== undefined) parts[`env.${name}`] = digest(String(item))
+        if (item !== undefined && !SDK_WRITTEN_ENV.has(name)) parts[`env.${name}`] = digest(String(item))
       }
     } else {
       parts[key] = digest(stableStringify(value) ?? "")
@@ -399,7 +410,8 @@ export function createWarmPool(config: WarmPoolConfig, deps: WarmPoolDeps): Warm
       if (!shape) return
       for (const entry of entries.values()) {
         // One process per distinct turn shape is enough to serve the next one.
-        if (entry.fingerprint === shape.fingerprint && (entry.state === "idle" || entry.state === "warming")) return
+        if (entry.fingerprint === shape.fingerprint && entry.hint === hint
+          && (entry.state === "idle" || entry.state === "warming")) return
       }
       if (count("idle", "warming") >= config.maxIdle) {
         // Make room for the shape that is in use now.

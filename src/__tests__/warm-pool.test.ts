@@ -96,6 +96,12 @@ describe("warmShape", () => {
     expect(warmShape(baseOptions({ mcpServers: {} }))).toBeDefined()
   })
 
+  it("ignores env the SDK writes after its first query", () => {
+    const a = warmShape(baseOptions())
+    const b = warmShape(baseOptions({ env: { A: "1", TOKEN: "secret", CLAUDE_AGENT_SDK_VERSION: "0.2.141" } }))
+    expect(a?.fingerprint).toBe(b?.fingerprint as string)
+  })
+
   it("names what differs without exposing values", () => {
     const a = warmShape(baseOptions())!
     const b = warmShape(baseOptions({ model: "other", env: { A: "1", TOKEN: "rotated" } }))!
@@ -186,6 +192,15 @@ describe("createWarmPool", () => {
     expect(started[1]!.closed).toBe(true)
     expect(joined.length).toBe(2)
     expect(pool.stats()).toMatchObject({ idle: 0, reserved: 0, expired: 1 })
+  })
+
+  it("starts a process for each hint even when the shape is shared", async () => {
+    const { pool, started, settle } = harness()
+    pool.refill("a", baseOptions())
+    pool.refill("b", baseOptions())
+    await settle()
+    expect(started.length).toBe(2)
+    expect(pool.reserve("b")).toBeDefined()
   })
 
   it("only hands out processes reserved under the same hint", async () => {

@@ -34,7 +34,10 @@ import { socketActivationFd, parseIdleExitSeconds, isModelRequestPath } from "./
 import type { Server } from "node:http"
 import { join } from "node:path"
 import { configPath } from "../configDir"
-import { query, startup } from "@anthropic-ai/claude-agent-sdk"
+import { query } from "@anthropic-ai/claude-agent-sdk"
+// Read through the namespace, and only when the warm pool is on: a named
+// import would require every stand-in for the SDK to export `startup`.
+import * as agentSdk from "@anthropic-ai/claude-agent-sdk"
 import { rateLimitStore } from "./rateLimitStore"
 import { guardUpstreamIdle, UpstreamIdleError, type LateIdleDeadline } from "./streamIdleGuard"
 import { IdleStallCeilingError, IdleStallTracker, idleStallRequestKey } from "./idleStallCeiling"
@@ -1120,7 +1123,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         idleMs: Math.max(1_000, envInt("WARM_POOL_IDLE_MS", 600_000)),
         reserveMs: 120_000,
       }, {
-        startup,
+        startup: (params) => agentSdk.startup(params),
         createGate: (onStderr) => createSdkProcessGate(
           join(getSessionStoreDir(), "sdk-process-gates"),
           () => Promise.resolve(),
@@ -4531,7 +4534,9 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         // A pre-started subprocess already carries its session id, so the
         // transcript is prepared under that one. The launch site checks the
         // process against the options this turn ends up building.
-        requestMeta.warmHint = `${profile.id}|${model}|${stream ? "stream" : "non-stream"}`
+        // Streaming is not part of the key: both modes start the same
+        // subprocess, so either may use the other's.
+        requestMeta.warmHint = `${profile.id}|${model}`
         managedForkTarget = transcriptLocator(warmPool?.reserve(requestMeta.warmHint) ?? randomUUID())
         managedFreshTarget = true
         releaseManagedForkPins = pinActiveSessionGcLocators(managedForkTarget)
