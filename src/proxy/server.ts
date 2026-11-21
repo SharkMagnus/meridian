@@ -327,7 +327,7 @@ import {
   type TranscriptLocator,
 } from "./sessionLifecycle"
 import { createSdkProcessGate } from "./session/sdkProcessGate"
-import { createWarmPool, type WarmClaim } from "./warmPool"
+import { createWarmPool, warmHint, type WarmClaim } from "./warmPool"
 import {
   admitSessionStoreWrite, bookkeepingMode, checkpointProxyBookkeeping,
   initializeProxyBookkeeping as initializeProxyBookkeepingRuntime, retainProxyBookkeeping, closeProxyBookkeepingWhenSettled,
@@ -4534,10 +4534,15 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         // A pre-started subprocess already carries its session id, so the
         // transcript is prepared under that one. The launch site checks the
         // process against the options this turn ends up building.
+        // A turn with client tools gets an MCP server of its own and can
+        // never match, so it reserves nothing and starts no replacement.
         // Streaming is not part of the key: both modes start the same
         // subprocess, so either may use the other's.
-        requestMeta.warmHint = `${profile.id}|${model}`
-        managedForkTarget = transcriptLocator(warmPool?.reserve(requestMeta.warmHint) ?? randomUUID())
+        requestMeta.warmHint = warmPool && !(Array.isArray(body.tools) && body.tools.length > 0)
+          ? warmHint(profile.id, model, systemContext)
+          : undefined
+        const warmSessionId = requestMeta.warmHint !== undefined ? warmPool?.reserve(requestMeta.warmHint) : undefined
+        managedForkTarget = transcriptLocator(warmSessionId ?? randomUUID())
         managedFreshTarget = true
         releaseManagedForkPins = pinActiveSessionGcLocators(managedForkTarget)
         managedForkTarget = await prepareForkForPublication(managedForkTarget, admissionLifecycleOptions)
