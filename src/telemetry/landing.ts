@@ -194,7 +194,34 @@ export const landingHtml = `<!DOCTYPE html>
     .container { padding-left: 8px; padding-right: 8px; }
     .profile-card { padding: 9px 10px; }
   }
-  .profile-sub { font-size: 11px; color: var(--muted); text-align: right; margin-bottom: 12px; }
+  .profile-sub { font-size: 11px; color: var(--muted); margin-bottom: 12px;
+    display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 12px; }
+  .profile-sub .reqs { margin-left: auto; text-align: right; }
+  /* The read clock and the marks a dollar figure carries when it moves. One
+     clock for the page: every figure comes from the same 2 s read. */
+  .head-left { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-width: 0; }
+  .live { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted);
+    letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
+  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: live-beat 2s ease-out; }
+  .live-track { display: block; width: 64px; height: 2px; border-radius: 1px; background: var(--surface2); overflow: hidden; }
+  .live-track i { display: block; height: 100%; background: var(--green); transform-origin: left; animation: live-drain 2s linear forwards; }
+  .live.dead { color: var(--red); }
+  .live.dead .live-dot { background: var(--red); animation: none; }
+  .moved { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .moved.up { color: var(--green); }
+  /* A drop is a request leaving the 24h window, not an error: no red. */
+  .flash-up { animation: flash-up 1.6s ease-out; }
+  .flash-down { animation: flash-down 1.6s ease-out; }
+  .stale { opacity: 0.5; }
+  @keyframes live-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+  @keyframes live-beat { 0% { box-shadow: 0 0 0 0 rgba(var(--green-rgb), 0.7); } 60%, 100% { box-shadow: 0 0 0 6px rgba(var(--green-rgb), 0); } }
+  @keyframes flash-up { 0% { color: var(--green); text-shadow: 0 0 12px rgba(var(--green-rgb), 0.55); } }
+  @keyframes flash-down { 0% { color: var(--accent); } }
+  @media (prefers-reduced-motion: reduce) {
+    .live-track { display: none; }
+    .live-dot { animation: none; }
+    .flash-up, .flash-down { animation-timing-function: steps(1, end); }
+  }
   .usage-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 4px 0; }
   .usage-row .w-label { color: var(--muted); width: 64px; flex-shrink: 0; }
   .usage-row .w-bar { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
@@ -297,9 +324,20 @@ export const landingHtml = `<!DOCTYPE html>
 function ms(v){if(v==null||v===0)return '—';return v<1000?v+'ms':(v/1000).toFixed(1)+'s'}
 function esc(s){return String(s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]})}
 function usd(v){if(v==null)return '—';if(v>0&&v<0.01)return '$'+v.toFixed(4);return '$'+v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-// The 24h window slides, so the figure also drops as old requests leave it.
-var costSeen=null,costDelta=0,costAt=0;
-function costMoved(v,now){if(v==null)return 'list prices';if(costSeen!=null&&v!==costSeen){costDelta=v-costSeen;costAt=now}costSeen=v;if(!costAt)return 'list prices';var s=Math.round((now-costAt)/1000);return (costDelta<0?'−':'+')+usd(Math.abs(costDelta))+' · '+(s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h')+' ago'}
+// One entry per figure: the total and each account card. The 24h window
+// slides, so a figure also drops as old requests leave it.
+var moved={},readAt=0,readOk=true,awayMs=0;
+function span(s){return s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h'}
+// A good read after a minute without one carries everything since in one step.
+function noteRead(now,ok){readOk=ok;if(!ok)return;awayMs=readAt&&now-readAt>=60000?now-readAt:0;readAt=now}
+function trackMove(key,v,now){if(v==null)return null;var m=moved[key]||(moved[key]={seen:null,delta:0,at:0,away:0,fresh:false});m.fresh=m.seen!=null&&v!==m.seen;if(m.fresh){m.delta=v-m.seen;m.at=now;m.away=awayMs}m.seen=v;return m}
+function movedText(m,now){if(!m||!m.at)return '';var d=(m.delta<0?'−':'+')+usd(Math.abs(m.delta));if(m.away)return d+' while away '+span(Math.round(m.away/1000));var s=Math.round((now-m.at)/1000);return d+' · '+(s<2?'now':span(s)+' ago')}
+function movedHtml(m,now){var t=movedText(m,now);return t?'<span class="moved '+(m.delta<0?'down" title="An older request left the 24-hour window':'up" title="Last change of this figure')+'">'+t+'</span>':''}
+function flashClass(m){return m&&m.fresh?(m.delta<0?' flash-down':' flash-up'):''}
+function clockHtml(now){return readOk?'<span class="live" title="Dollar figures are read every 2 s while this tab is visible. The 5h and 7d bars refresh every 30 s."><span class="live-dot"></span>live<span class="live-track"><i></i></span></span>':'<span class="live dead"><span class="live-dot"></span><span><span role="status">no answer</span> · last read '+span(Math.round((now-readAt)/1000))+' ago</span></span>'}
+// A CSS animation runs once per class change, and the patch keeps the node, so
+// a figure that moves on two reads running would flash only the first time.
+function replayMarks(){var n=document.querySelectorAll('.live-dot,.live-track i,.flash-up,.flash-down');for(var i=0;i<n.length;i++){n[i].style.animation='none';void n[i].offsetWidth;n[i].style.animation=''}}
 
 var WIN_LABELS={five_hour:'5h',seven_day:'7d',seven_day_opus:'7d Opus',seven_day_sonnet:'7d Sonnet',seven_day_fable:'7d Fable',seven_day_oauth_apps:'7d Apps',seven_day_cowork:'7d Cowork',seven_day_omelette:'7d Omelette'};
 function winLabel(t){if(WIN_LABELS[t])return WIN_LABELS[t];return t.replace(/^seven_day_/,'7d ').replace(/_/g,' ').replace(/\\b\\w/g,function(c){return c.toUpperCase()})}
@@ -620,7 +658,7 @@ function profileSection(q,s,pl,h){
     var updating=!!(update&&update.state==='updating');
     var cardHidden=!cardShown(slot.provider,loginStates[i],updating);
     if(grouped&&slot.place===0)cards+=meridianProviders.headingHtml(slot.group,!groupShown[slot.provider]);
-    var p=slot.item;var cost=profileCost(byProfile,p);
+    var p=slot.item;var cost=profileCost(byProfile,p);var costMove=trackMove('p:'+p.id,cost?cost.estimatedUsd:0,Date.now());
     var chat=isChatGptProfile(p.entry);
     var quota=quotaByProfile[p.id]||{};
     var wins=(quota.windows||[]).filter(function(w){return w.utilization!=null});
@@ -734,13 +772,13 @@ function profileSection(q,s,pl,h){
       +(switchable?' data-profile="'+esc(p.id)+'" role="button" tabindex="0"':'')+'>'
       +cardStrip
       +'<div class="profile-head"><span class="profile-name">'+(draggable?meridianReorder.handleHtml(p.id,pos,slot.place,slot.size):'')+'<span class="prof-dot"></span>'+(p.entry?infoIcon(p.entry,p.type):'')+''+esc(p.label||p.id)+' '+meridianProviders.badgeHtml(slot.provider,'provider-pill')+badge+'</span>'
-      +'<span class="profile-cost">'+usd(cost?cost.estimatedUsd:0)+'</span></div>'
-      +'<div class="profile-sub">'+(cost?cost.requests+' request'+(cost.requests===1?'':'s')+' · est. API value · 24h':'no traffic · 24h')+'</div>'
+      +'<span class="profile-cost'+flashClass(costMove)+(readOk?'':' stale')+'">'+usd(cost?cost.estimatedUsd:0)+'</span></div>'
+      +'<div class="profile-sub">'+movedHtml(costMove,Date.now())+'<span class="reqs">'+(cost?cost.requests+' request'+(cost.requests===1?'':'s')+' · est. API value · 24h':'no traffic · 24h')+'</span></div>'
       +meridianCardStatus.updateHtml(update)+rows+'</div>';
     if(p.configured)pos++;
   }
   if(!cards)return {html:'',shown:shown};
-  return {shown:shown,html:'<div class="section"><div class="section-head"><div class="section-title">'+(profs.length===1?'Account':'Accounts')+'</div>'+sortTabs(profs.length)+'</div>'
+  return {shown:shown,html:'<div class="section"><div class="section-head"><div class="head-left"><div class="section-title">'+(profs.length===1?'Account':'Accounts')+'</div>'+clockHtml(Date.now())+'</div>'+sortTabs(profs.length)+'</div>'
     +'<div class="chip-row">'+meridianProviders.chipsHtml(groups)+meridianLoginStates.chipsHtml(meridianLoginStates.counts(loginStates),loginTotal)+'</div>'
     +(multi?meridianReorder.noteHtml(reorderable,configured.some(isChatGptProfile),grouped):'')
     +(grouped?meridianProviders.noneShownHtml(meridianProviders.anyShown(providersPresent)):'')
@@ -768,8 +806,16 @@ async function refresh(){
     ]);
     if(infoPopOpen())return;
     meridianReorder.adopt(routing);
+    noteRead(Date.now(),true);
     render(health,stats,quota,profiles);
-  }catch(e){if(!infoPopOpen())document.getElementById('content').innerHTML='<div style="color:var(--red);padding:40px;text-align:center">Could not connect</div>'}
+    replayMarks();
+  }catch(e){
+    noteRead(Date.now(),false);
+    if(infoPopOpen())return;
+    // The last figures stay, dimmed, under a clock that says the read failed.
+    try{if(!lastData)throw e;render(lastData[0],lastData[1],lastData[2],lastData[3])}
+    catch(_){document.getElementById('content').innerHTML='<div style="color:var(--red);padding:40px;text-align:center">Could not connect</div>'}
+  }
 }
 
 function tokens(v){if(v==null)return '—';if(v>=1e6)return (v/1e6).toFixed(1)+'M';if(v>=1e3)return (v/1e3).toFixed(1)+'k';return String(v)}
@@ -791,12 +837,13 @@ function render(h,s,q,pl){
   // violations appear only when there is something to report.
   var tu=s.tokenUsage||{};
   var cache=tu.avgCacheHitRate!=null?Math.round(tu.avgCacheHitRate*100)+'%':'—';
+  var totalMove=trackMove('total',s.costEstimate?.totalUsd,Date.now());
   var items=[\n    // The big number is the TOTAL — never error-colored (a red 1714 reads as
     // 1714 failures). The error signal lives on the detail line only.
     ['Requests',String(s.totalRequests),'',s.errorCount>0?s.errorCount+' error'+(s.errorCount===1?'':'s'):'no errors',s.errorCount>0?'red':''],
     ['Tokens Out',tokens(tu.totalOutputTokens),'',tokens(tu.totalInputTokens)+' in'],
     ['Cache Hit',cache,tu.avgCacheHitRate>=0.5?'green':'','prompt cache'],
-    ['Est. API Value',usd(s.costEstimate?.totalUsd),'',costMoved(s.costEstimate?.totalUsd,Date.now())],
+    ['Est. API Value',usd(s.costEstimate?.totalUsd),(flashClass(totalMove)+(readOk?'':' stale')).trim(),movedHtml(totalMove,Date.now())||'list prices'],
     ['Median Response',ms(s.totalDuration?.p50),'','p95 '+ms(s.totalDuration?.p95)]
   ];
   if(s.envelopeViolationCount>0)items.push(['Envelope',String(s.envelopeViolationCount),'red','wire-contract violations']);
