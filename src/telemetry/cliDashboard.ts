@@ -164,8 +164,7 @@ function isNum(v: unknown): v is number {
 function usd(v: number | null | undefined): string {
   if (!isNum(v)) return UNKNOWN
   if (v > 0 && v < 0.01) return `$${v.toFixed(4)}`
-  if (v < 100) return `$${v.toFixed(2)}`
-  return `$${Math.round(v).toLocaleString("en-US")}`
+  return `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 /** `tokens()` in landing.ts. */

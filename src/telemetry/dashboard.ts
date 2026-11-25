@@ -142,8 +142,7 @@ function esc(s) {
 function usd(v) {
   if (v == null) return '—';
   if (v > 0 && v < 0.01) return '$' + v.toFixed(4);
-  if (v < 100) return '$' + v.toFixed(2);
-  return '$' + Math.round(v).toLocaleString();
+  return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function pctRow(label, color, phase) {

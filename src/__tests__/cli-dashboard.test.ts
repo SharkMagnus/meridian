@@ -146,8 +146,8 @@ describe("renderCliDashboard — a healthy fleet", () => {
     expect(out).toContain("2.3M")
     expect(out).toContain("1.2M in")
     expect(out).toContain("87%")
-    // usd() rounds at and above $100, cents only below it — landing.ts's rule.
-    expect(out).toContain("$312")
+    // usd() keeps cents at every size — landing.ts's rule.
+    expect(out).toContain("$312.45")
     expect(out).toContain("4.2s")
     expect(out).toContain("p95 18.3s")
   })
@@ -157,7 +157,7 @@ describe("renderCliDashboard — a healthy fleet", () => {
   })
 
   it("shows per-profile cost and request counts", () => {
-    expect(out).toContain("$310")
+    expect(out).toContain("$310.20")
     expect(out).toContain("1700 requests · est. API value · 24h")
     expect(out).toContain("14 requests · est. API value · 24h")
   })
