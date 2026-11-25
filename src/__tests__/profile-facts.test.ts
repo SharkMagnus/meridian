@@ -447,6 +447,7 @@ describe("expiry fact focus survives automatic refresh", () => {
           (selector.includes(":hover") && hovered) || (selector.includes(":focus") && windowFocused && focused)
         ) ? factElement : null,
         getElementById: () => content,
+        querySelectorAll: () => [],
       }
       const source = page === "profiles"
         // The provider chips' inline script defines its own esc() earlier in
@@ -455,7 +456,10 @@ describe("expiry fact focus survives automatic refresh", () => {
           + "function adoptChatGpt() {}\nfunction noticeNewChatGptSeats() {}\n"
           + profilePageHtml.slice(profilePageHtml.indexOf("function detailFactFocused()"),
             profilePageHtml.indexOf("function esc(s)", profilePageHtml.indexOf("function detailFactFocused()")))
-        : landingHtml.slice(landingHtml.indexOf("function infoPopOpen(){"), landingHtml.indexOf("function profileSection(q,s,pl,h)"))
+        // refresh() records each read and replays the marks of what moved.
+        : ["lastData", "moved", "span", "noteRead", "replayMarks"]
+          .map(name => landingHtml.match(new RegExp(`^(?:function|var) ${name}\\b.*$`, "m"))![0]).join("\n") + "\n"
+          + landingHtml.slice(landingHtml.indexOf("function infoPopOpen(){"), landingHtml.indexOf("function profileSection(q,s,pl,h)"))
           + landingHtml.slice(landingHtml.indexOf("async function refresh(){"), landingHtml.indexOf("function tokens(v)"))
       const refresh = new Function("document", "fetch", "render", "meridianReorder",
         source + "\nreturn refresh;")(document, fetch, () => { renders++ }, { adopt: () => {} }) as () => Promise<void>

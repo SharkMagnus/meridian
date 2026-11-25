@@ -24,6 +24,23 @@ function page(): Page {
 }
 const text = (html: string) => html.replace(/<[^>]*>/g, "")
 
+// The page's refresh() with every read failing, over the figures it last drew.
+function failingRefresh(lastData: unknown[] | null) {
+  const line = (name: string) => landingHtml.match(new RegExp(`^(?:function|var) ${name}\\b.*$`, "m"))![0]
+  const content = { innerHTML: "the page as last drawn" }
+  const drawn: unknown[][] = []
+  const source = ["moved", "span", "noteRead", "replayMarks"].map(line).join("\n")
+    + `\nvar lastData=${JSON.stringify(lastData)};\nfunction infoPopOpen(){return false}\n`
+    + landingHtml.slice(landingHtml.indexOf("async function refresh(){"), landingHtml.indexOf("function tokens(v)"))
+  const refresh = new Function("document", "fetch", "render", "meridianReorder", source + "\nreturn refresh;")(
+    { getElementById: () => content, querySelectorAll: () => [] },
+    () => Promise.reject(new Error("fixture unavailable")),
+    (...data: unknown[]) => { drawn.push(data) },
+    { adopt: () => {} },
+  ) as () => Promise<void>
+  return { refresh, content, drawn }
+}
+
 test("a figure's line reports its last move and that move's age", () => {
   const p = page()
   p.noteRead(1_000, true)
@@ -92,4 +109,18 @@ test("time away is measured from the last good read, across failed ones", () => 
   p.noteRead(30_000, false)
   p.noteRead(90_000, true)
   expect(p.movedText(p.trackMove("total", 303, 90_000), 90_000)).toBe("+$3.00 while away 1m")
+})
+
+test("a failed read redraws the figures the page already has", async () => {
+  const f = failingRefresh(["health", "stats", "quota", "profiles"])
+  await f.refresh()
+  expect(f.drawn).toEqual([["health", "stats", "quota", "profiles"]])
+  expect(f.content.innerHTML).toBe("the page as last drawn")
+})
+
+test("a failed first read says the page could not connect", async () => {
+  const f = failingRefresh(null)
+  await f.refresh()
+  expect(f.drawn).toEqual([])
+  expect(text(f.content.innerHTML)).toBe("Could not connect")
 })
