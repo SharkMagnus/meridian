@@ -297,6 +297,9 @@ export const landingHtml = `<!DOCTYPE html>
 function ms(v){if(v==null||v===0)return '—';return v<1000?v+'ms':(v/1000).toFixed(1)+'s'}
 function esc(s){return String(s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]})}
 function usd(v){if(v==null)return '—';if(v>0&&v<0.01)return '$'+v.toFixed(4);return '$'+v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+// The 24h window slides, so the figure also drops as old requests leave it.
+var costSeen=null,costDelta=0,costAt=0;
+function costMoved(v,now){if(v==null)return 'list prices';if(costSeen!=null&&v!==costSeen){costDelta=v-costSeen;costAt=now}costSeen=v;if(!costAt)return 'list prices';var s=Math.round((now-costAt)/1000);return (costDelta<0?'−':'+')+usd(Math.abs(costDelta))+' · '+(s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h')+' ago'}
 
 var WIN_LABELS={five_hour:'5h',seven_day:'7d',seven_day_opus:'7d Opus',seven_day_sonnet:'7d Sonnet',seven_day_fable:'7d Fable',seven_day_oauth_apps:'7d Apps',seven_day_cowork:'7d Cowork',seven_day_omelette:'7d Omelette'};
 function winLabel(t){if(WIN_LABELS[t])return WIN_LABELS[t];return t.replace(/^seven_day_/,'7d ').replace(/_/g,' ').replace(/\\b\\w/g,function(c){return c.toUpperCase()})}
@@ -793,7 +796,7 @@ function render(h,s,q,pl){
     ['Requests',String(s.totalRequests),'',s.errorCount>0?s.errorCount+' error'+(s.errorCount===1?'':'s'):'no errors',s.errorCount>0?'red':''],
     ['Tokens Out',tokens(tu.totalOutputTokens),'',tokens(tu.totalInputTokens)+' in'],
     ['Cache Hit',cache,tu.avgCacheHitRate>=0.5?'green':'','prompt cache'],
-    ['Est. API Value',usd(s.costEstimate?.totalUsd),'','list prices'],
+    ['Est. API Value',usd(s.costEstimate?.totalUsd),'',costMoved(s.costEstimate?.totalUsd,Date.now())],
     ['Median Response',ms(s.totalDuration?.p50),'','p95 '+ms(s.totalDuration?.p95)]
   ];
   if(s.envelopeViolationCount>0)items.push(['Envelope',String(s.envelopeViolationCount),'red','wire-contract violations']);
@@ -863,7 +866,7 @@ function pollRefresh(){
   if(document.visibilityState!=='visible'||meridianReorder.dragging()||infoPopOpen())return;
   refresh();
 }
-setInterval(pollRefresh,10000);
+setInterval(pollRefresh,2000);
 document.addEventListener('visibilitychange',pollRefresh);
 ` + profileBarJs + `
 </script>

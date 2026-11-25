@@ -37,7 +37,8 @@ for (const [page, html] of Object.entries({ landingHtml, profilePageHtml, provid
   })
 
   test(`${page} runs its timed poll and its visibilitychange refresh through that guard`, () => {
-    expect(html).toMatch(/setInterval\(pollRefresh, ?10000\)/)
+    const everyMs = page === "landingHtml" ? 2000 : 10000
+    expect(html).toMatch(new RegExp(`setInterval\\(pollRefresh, ?${everyMs}\\)`))
     expect(html).toMatch(/addEventListener\('visibilitychange', ?pollRefresh\)/)
   })
 }
