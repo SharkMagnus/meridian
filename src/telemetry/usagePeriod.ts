@@ -8,11 +8,10 @@
  */
 
 export type UsagePeriod = "today" | "week" | "month" | "24h"
-export const USAGE_PERIODS: ReadonlyArray<{ id: UsagePeriod; label: string; title: string; everyMs?: number }> = [
+export const USAGE_PERIODS: ReadonlyArray<{ id: UsagePeriod; label: string; title: string }> = [
   { id: "today", label: "Today", title: "Since midnight" },
   { id: "week", label: "This week", title: "Since Monday 00:00" },
-  // ponytail: ~13k rows read synchronously in the proxy (~40 ms), so re-read every 10 s, not 2. Server cache if loop lag still shows.
-  { id: "month", label: "This month", title: "Since the 1st", everyMs: 10_000 },
+  { id: "month", label: "This month", title: "Since the 1st" },
   { id: "24h", label: "Last 24h", title: "Rolling 24 hours" },
 ]
 /** Epoch ms where `period` starts, in the runtime's local zone. Week starts Monday. */

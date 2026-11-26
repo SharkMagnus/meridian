@@ -6,9 +6,9 @@ import { periodStart } from "../telemetry/usagePeriod"
 const pageStart = new Function(`return (${periodStart.toString()})`)() as typeof periodStart
 
 // Never `delete process.env.TZ`: on bun 1.3.14 later assignments are then ignored.
-const saved = process.env.TZ
+const saved = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone
 beforeAll(() => { process.env.TZ = "Europe/Copenhagen" })
-afterAll(() => { process.env.TZ = saved ?? "Etc/UTC" })
+afterAll(() => { process.env.TZ = saved })
 
 const start = (period: string, now: string) => new Date(pageStart(period, Date.parse(now))).toISOString()
 

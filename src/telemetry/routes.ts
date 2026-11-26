@@ -4,6 +4,7 @@
  * GET /telemetry            — HTML dashboard
  * GET /telemetry/requests   — Recent request metrics (JSON)
  * GET /telemetry/summary    — Aggregate statistics (JSON)
+ * GET /telemetry/usage      — The landing page's figures since a time, from running totals (JSON)
  * GET /telemetry/timeseries — Per-bucket requests, tokens, latency, cost (JSON)
  * GET /telemetry/logs       — Diagnostic logs (JSON)
  */
@@ -21,6 +22,9 @@ import { getPricingOverrides } from "./pricingStore"
 /** Upper bound on the rows one /routes tally reads, matching the memory
  *  store's ring capacity so a window inside it is covered exactly. */
 const ROUTE_SUMMARY_MAX_ROWS = 1000
+
+/** How far back one /usage read may reach: a month, its 25-hour day and a slow clock. */
+const USAGE_MAX_RANGE_MS = 32 * 86_400_000
 
 export interface TelemetryRouteDeps {
   /**
@@ -84,6 +88,17 @@ export function createTelemetryRoutes(deps: TelemetryRouteDeps = {}) {
     const summary = telemetryStore.summarize(windowMs)
     const sessionTree = deps.getSessionTree?.()
     return c.json(sessionTree ? { ...summary, sessionTree } : summary)
+  })
+
+  // The landing page's figures. `since` (epoch ms) is a fixed start, such as
+  // midnight; `window` (ms) a rolling one. A future `since` is an empty window.
+  routes.get("/usage", (c) => {
+    const now = Date.now()
+    const since = Number(c.req.query("since"))
+    const windowMs = Number(c.req.query("window"))
+    const start = since > 0 ? since : windowMs > 0 ? now - windowMs : Number.NaN
+    if (!(now - start <= USAGE_MAX_RANGE_MS)) return c.json({ error: "since (epoch ms) or window (ms) is required, at most 32 days back" }, 400)
+    return c.json(telemetryStore.usageSince(start, since > 0 ? undefined : `w${windowMs}`))
   })
 
   // Bucketed history over [start, end). Raw rows, not collapsed chains, so

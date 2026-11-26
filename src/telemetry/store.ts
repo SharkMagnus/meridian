@@ -5,7 +5,7 @@
  * No disk I/O in the hot path. Data resets on proxy restart.
  */
 
-import type { RequestMetric, TelemetrySummary, ITelemetryStore, TelemetryRetention } from "./types"
+import type { RequestMetric, TelemetrySummary, ITelemetryStore, TelemetryRetention, UsageSummary } from "./types"
 import { computeSummary, isCacheKeepaliveMetric } from "./percentiles"
 import { getPricingOverrides } from "./pricingStore"
 import { getSetting } from "../settings"
@@ -120,6 +120,11 @@ export class MemoryTelemetryStore implements ITelemetryStore {
     const since = Date.now() - windowMs
     const metrics = this.getRecent({ limit: this.capacity, since })
     return computeSummary(metrics, windowMs, getPricingOverrides())
+  }
+
+  /** The ring is already in memory, so this is a plain summary of it. */
+  usageSince(since: number): UsageSummary {
+    return computeSummary(this.getRecent({ limit: this.capacity, since }), 0, getPricingOverrides())
   }
 
   /** Clear all stored metrics. */

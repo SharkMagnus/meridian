@@ -211,6 +211,33 @@ describe("Telemetry routes", () => {
     expect(body.totalRequests).toBe(1) // only the recent one
   })
 
+  it("GET /telemetry/usage?since= counts a request at since and not one 1 ms before", async () => {
+    const since = Date.now() - 1_000
+    telemetryStore.record(makeMetric({ timestamp: since - 1 }))
+    telemetryStore.record(makeMetric({ timestamp: since }))
+
+    const res = await app.fetch(new Request(`http://localhost/telemetry/usage?since=${since}`))
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.totalRequests).toBe(1)
+    expect(body.costEstimate.totalUsd).toBeGreaterThan(0)
+  })
+
+  it("GET /telemetry/usage?window= counts only the window's requests", async () => {
+    telemetryStore.record(makeMetric({ timestamp: Date.now() - 120_000 }))
+    telemetryStore.record(makeMetric({ timestamp: Date.now() }))
+
+    const res = await app.fetch(new Request("http://localhost/telemetry/usage?window=60000"))
+    const body = await res.json() as any
+    expect(body.totalRequests).toBe(1)
+  })
+
+  it("GET /telemetry/usage refuses a read with no start or one over 32 days back", async () => {
+    expect((await app.fetch(new Request("http://localhost/telemetry/usage"))).status).toBe(400)
+    const since = Date.now() - 40 * 86_400_000
+    expect((await app.fetch(new Request(`http://localhost/telemetry/usage?since=${since}`))).status).toBe(400)
+  })
+
   it("caps limit at 500", async () => {
     const res = await app.fetch(new Request("http://localhost/telemetry/requests?limit=9999"))
     expect(res.status).toBe(200)

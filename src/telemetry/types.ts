@@ -317,6 +317,13 @@ export interface TelemetrySummary {
   cacheKeepalive: CacheKeepaliveSummary
 }
 
+/** The TelemetrySummary fields the landing page reads, and nothing else. */
+export type UsageSummary = Pick<TelemetrySummary, "totalRequests" | "errorCount" | "envelopeViolationCount"> & {
+  tokenUsage: Pick<TelemetrySummary["tokenUsage"], "totalInputTokens" | "totalOutputTokens" | "avgCacheHitRate">
+  totalDuration: Pick<PhaseTiming, "p50" | "p95">
+  costEstimate: Pick<CostEstimate, "totalUsd" | "byProfile">
+}
+
 /** What the window's prompt-cache keepalive beats did and cost. */
 export interface CacheKeepaliveSummary {
   /** Beats attempted. */
@@ -423,6 +430,11 @@ export interface ITelemetryStore {
   getLastForSession(sdkSessionId: string): RequestMetric | undefined
   /** Compute aggregate statistics over a time window. */
   summarize(windowMs?: number): TelemetrySummary
+  /** The landing page's figures for requests at or after `since`, kept as
+   *  running totals so a repeat read costs only the rows recorded since the
+   *  last one. `slideKey` names a rolling window whose `since` moves forward
+   *  between reads; without it each `since` is its own window. */
+  usageSince(since: number, slideKey?: string): UsageSummary
   /** Clear all stored metrics. */
   clear(): void
 }

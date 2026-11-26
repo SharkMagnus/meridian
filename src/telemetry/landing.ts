@@ -4,7 +4,7 @@
  * The at-a-glance dashboard: a short how-it-works intro, per-account cards
  * (usage + est. cost, click to switch the active profile), and a compact
  * traffic strip for the chosen usage period. Site chrome (logo, nav, status)
- * lives in the shared header from profileBar.ts. Fetches /health, /telemetry/summary,
+ * lives in the shared header from profileBar.ts. Fetches /health, /telemetry/usage,
  * /v1/usage/quota/all, /profiles/list and /settings/api/routing client-side for live data.
  */
 
@@ -333,10 +333,10 @@ var moved={},readAt=0,readOk=true,awayMs=0;
 // Inlined from src/telemetry/usagePeriod.ts, unit-tested in usage-period.test.ts.
 var USAGE_PERIODS=${JSON.stringify(USAGE_PERIODS)};
 var periodStart=${periodStart.toString()};
-var viewPeriod=${JSON.stringify(USAGE_PERIODS[0]!.id)},statsKey='',statsAt=0;
+var viewPeriod=${JSON.stringify(USAGE_PERIODS[0]!.id)},statsKey='',asks=0,shown=0;
 function periodOf(id){for(var i=0;i<USAGE_PERIODS.length;i++)if(USAGE_PERIODS[i].id===id)return USAGE_PERIODS[i];return USAGE_PERIODS[0]}
 // A calendar period's key holds until rollover; the 24h one never changes.
-function readPlan(id,now){var start=periodStart(id,now);return {key:id==='24h'?id:id+start,url:'/telemetry/summary?window='+(now-start)}}
+function readPlan(id,now){var start=periodStart(id,now);return id==='24h'?{key:id,url:'/telemetry/usage?window=86400000'}:{key:id+start,url:'/telemetry/usage?since='+start}}
 function enterWindow(key){if(key!==statsKey){moved={};statsKey=key}}
 function span(s){return s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h'}
 // A good read after a minute without one carries everything since in one step.
@@ -345,7 +345,7 @@ function trackMove(key,v,now){if(v==null)return null;var m=moved[key]||(moved[ke
 function movedText(m,now){if(!m||!m.at)return '';var d=(m.delta<0?'−':'+')+usd(Math.abs(m.delta));if(m.away)return d+' while away '+span(Math.round(m.away/1000));var s=Math.round((now-m.at)/1000);return d+' · '+(s<2?'now':span(s)+' ago')}
 function movedHtml(m,now){var t=movedText(m,now);return t?'<span class="moved '+(m.delta<0?'down" title="An older request left the window, or a price changed':'up" title="Last change of this figure')+'">'+t+'</span>':''}
 function flashClass(m){return m&&m.fresh?(m.delta<0?' flash-down':' flash-up'):''}
-function clockHtml(now){return readOk?'<span class="live" title="Dollar figures are read every 2 s (This month: every 10 s) while this tab is visible. The 5h and 7d bars refresh every 30 s."><span class="live-dot"></span>live<span class="live-track"><i></i></span></span>':'<span class="live dead"><span class="live-dot"></span><span><span role="status">no answer</span> · last read '+span(Math.round((now-readAt)/1000))+' ago</span></span>'}
+function clockHtml(now){return readOk?'<span class="live" title="Dollar figures are read every 2 s while this tab is visible. The 5h and 7d bars refresh every 30 s."><span class="live-dot"></span>live<span class="live-track"><i></i></span></span>':'<span class="live dead"><span class="live-dot"></span><span><span role="status">no answer</span> · last read '+span(Math.round((now-readAt)/1000))+' ago</span></span>'}
 // A CSS animation runs once per class change, and the patch keeps the node, so
 // a figure that moves on two reads running would flash only the first time.
 function replayMarks(){var n=document.querySelectorAll('.live-dot,.live-track i,.flash-up,.flash-down');for(var i=0;i<n.length;i++){n[i].style.animation='none';void n[i].offsetWidth;n[i].style.animation=''}}
@@ -827,24 +827,25 @@ function strip(items){
 
 async function refresh(){
   if(infoPopOpen())return;
-  var asked=viewPeriod,now=Date.now(),plan=readPlan(asked,now);
-  var reuse=!!lastData&&plan.key===statsKey&&now-statsAt<(periodOf(asked).everyMs||0);
+  var asked=viewPeriod,plan=readPlan(asked,Date.now()),seq=++asks;
   try{
     const [health,stats,quota,profiles,routing]=await Promise.all([
       fetch('/health').then(r=>r.json()),
-      reuse?lastData[1]:fetch(plan.url).then(r=>r.json()),
+      fetch(plan.url).then(r=>r.json()),
       fetch('/v1/usage/quota/all').then(r=>r.json()).catch(function(){return null}),
       fetch('/profiles/list').then(r=>r.json()).catch(function(){return null}),
       fetch('/settings/api/routing').then(r=>r.json()).catch(function(){return null})
     ]);
-    // A late answer for the period just left is dropped.
-    if(infoPopOpen()||asked!==viewPeriod)return;
-    stats.period=asked;enterWindow(plan.key);if(!reuse)statsAt=now;
+    // A late answer for the period just left, or one a newer read overtook, is dropped.
+    if(infoPopOpen()||asked!==viewPeriod||seq<shown)return;shown=seq;
+    stats.period=asked;enterWindow(plan.key);
     meridianReorder.adopt(routing);
     noteRead(Date.now(),true);
     render(health,stats,quota,profiles);
     replayMarks();
   }catch(e){
+    // An overtaken read that fails late does not mark the page dead either.
+    if(seq<shown)return;shown=seq;
     noteRead(Date.now(),false);
     if(infoPopOpen())return;
     // The last figures stay, dimmed, under a clock that says the read failed.

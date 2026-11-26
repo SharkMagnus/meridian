@@ -377,6 +377,7 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `GET /telemetry` | Performance dashboard |
 | `GET /telemetry/requests` | Recent request metrics (JSON) |
 | `GET /telemetry/summary` | Aggregate statistics (JSON) |
+| `GET /telemetry/usage` | The landing page's figures (requests, errors, tokens, cache hit rate, median and p95 duration, estimated cost in total and per profile) since `?since=<epoch ms>` or over a rolling `?window=<ms>`, at most 32 days back; kept as running totals so a repeat read is cheap (JSON) |
 | `GET /telemetry/timeseries` | Requests, errors, tokens, cache hit rate, p50 latency and estimated cost per time bucket (JSON); see [Monitoring](../MONITORING.md#diagnostic-queries) |
 | `GET /telemetry/logs` | Diagnostic logs (JSON) |
 | `GET /metrics` | Prometheus exposition format metrics |

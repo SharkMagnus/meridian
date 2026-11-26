@@ -1,8 +1,9 @@
 import Database from "libsql"
 import { statSync } from "node:fs"
-import type { RequestMetric, TelemetrySummary, ITelemetryStore, IDiagnosticLogStore, DiagnosticLog, TelemetryRetention } from "./types"
+import type { RequestMetric, TelemetrySummary, ITelemetryStore, IDiagnosticLogStore, DiagnosticLog, TelemetryRetention, UsageSummary } from "./types"
 import { CACHE_KEEPALIVE_REQUEST_SOURCE, computeSummary } from "./percentiles"
 import { getPricingOverrides } from "./pricingStore"
+import { addUsage, emptyUsageTotals, usageSummary, type UsageRow, type UsageTotals } from "./usageTotals"
 
 const METRICS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS metrics (
@@ -91,6 +92,14 @@ CREATE INDEX IF NOT EXISTS idx_logs_cat ON diagnostic_logs(category);
 
 const CLEANUP_INTERVAL = 1000
 
+/** What usageSince reads of a row: only what the landing figures need. */
+const USAGE_COLUMNS = `id, model, request_model, resolved_model, profile_id, error IS NOT NULL AS failed,
+  input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+  cache_hit_rate, total_duration_ms, envelope_violations`
+const USAGE_REQUESTS = "(request_source IS NULL OR request_source != @keepalive)"
+/** Windows usageSince keeps running totals for, most recently read last. */
+const USAGE_KEPT = 8
+
 /**
  * How long a write waits for another connection's write lock. libsql's own
  * default is zero, so a row recorded while anything else writes the file - a
@@ -126,6 +135,12 @@ class SqliteTelemetryStore implements ITelemetryStore {
   private insertStmt: Database.Statement
   private countStmt: Database.Statement
   private oldestStmt: Database.Statement
+  private usageTopStmt: Database.Statement
+  private usageColdStmt: Database.Statement
+  private usageNewStmt: Database.Statement
+  private usageGoneStmt: Database.Statement
+  private usage = new Map<string, { since: number; lastId: number; totals: UsageTotals }>()
+  private usagePricing = ""
 
   constructor(db: Database.Database, retentionDays: number, private readonly dbPath: string) {
     this.db = db
@@ -162,6 +177,15 @@ class SqliteTelemetryStore implements ITelemetryStore {
     // Served by idx_metrics_ts, so this stays a b-tree seek rather than the
     // table scan a MIN() over an unindexed column would be.
     this.oldestStmt = db.prepare("SELECT MIN(timestamp) as oldest FROM metrics")
+    // The unary + keeps each query on the index named beside it. Without it
+    // the planner takes the rowid bound, and a first read scans the table.
+    this.usageTopStmt = db.prepare("SELECT MAX(id) AS top FROM metrics")
+    this.usageColdStmt = db.prepare( // idx_metrics_ts
+      `SELECT ${USAGE_COLUMNS} FROM metrics WHERE timestamp >= @since AND +id <= @top AND ${USAGE_REQUESTS}`)
+    this.usageNewStmt = db.prepare( // rowid
+      `SELECT ${USAGE_COLUMNS} FROM metrics WHERE id > @lastId AND id <= @top AND +timestamp >= @since AND ${USAGE_REQUESTS}`)
+    this.usageGoneStmt = db.prepare( // idx_metrics_ts
+      `SELECT ${USAGE_COLUMNS} FROM metrics WHERE timestamp >= @from AND timestamp < @to AND +id <= @lastId AND ${USAGE_REQUESTS}`)
   }
 
   record(metric: RequestMetric): void {
@@ -305,7 +329,50 @@ class SqliteTelemetryStore implements ITelemetryStore {
     return computeSummary(metrics, windowMs, getPricingOverrides())
   }
 
+  /**
+   * Running totals per window: a repeat read adds the rows recorded since the
+   * last one and, for a rolling window, subtracts the rows it slid past.
+   * No try/catch and no LIMIT: a failed query drops the window's entry and
+   * fails the request, so the page says "no answer" rather than showing $0.
+   */
+  usageSince(since: number, slideKey?: string): UsageSummary {
+    const overrides = getPricingOverrides()
+    // Totals hold dollars already priced, so new rates start every window over.
+    const pricing = JSON.stringify(overrides)
+    if (pricing !== this.usagePricing) {
+      this.usage.clear()
+      this.usagePricing = pricing
+    }
+    const key = slideKey ?? String(since)
+    const top = (this.usageTopStmt.get() as { top: number | null }).top ?? 0
+    let entry = this.usage.get(key)
+    this.usage.delete(key)
+    const keepalive = CACHE_KEEPALIVE_REQUEST_SOURCE
+    if (!entry || since < entry.since) {
+      entry = { since, lastId: top, totals: emptyUsageTotals() }
+      // ponytail: one synchronous scan of the period per key per process; chunk by day behind a shared promise if the stall shows.
+      for (const r of this.usageColdStmt.all({ since, top, keepalive }) as Record<string, unknown>[]) {
+        addUsage(entry.totals, rowToUsage(r), 1, overrides)
+      }
+    } else {
+      if (since > entry.since) {
+        for (const r of this.usageGoneStmt.all({ from: entry.since, to: since, lastId: entry.lastId, keepalive }) as Record<string, unknown>[]) {
+          addUsage(entry.totals, rowToUsage(r), -1, overrides)
+        }
+        entry.since = since
+      }
+      for (const r of this.usageNewStmt.all({ lastId: entry.lastId, top, since, keepalive }) as Record<string, unknown>[]) {
+        addUsage(entry.totals, rowToUsage(r), 1, overrides)
+      }
+      entry.lastId = top
+    }
+    this.usage.set(key, entry)
+    if (this.usage.size > USAGE_KEPT) this.usage.delete(this.usage.keys().next().value!)
+    return usageSummary(entry.totals)
+  }
+
   clear(): void {
+    this.usage.clear()
     try {
       this.db.exec("DELETE FROM metrics")
     } catch { /* ignore */ }
@@ -314,6 +381,8 @@ class SqliteTelemetryStore implements ITelemetryStore {
   cleanup(): void {
     try {
       const cutoff = Date.now() - this.retentionMs
+      // A window reaching past the cutoff counted rows that are deleted next.
+      for (const [key, entry] of this.usage) if (entry.since < cutoff) this.usage.delete(key)
       this.db.prepare("DELETE FROM metrics WHERE timestamp < ?").run(cutoff)
       this.db.prepare("DELETE FROM diagnostic_logs WHERE timestamp < ?").run(cutoff)
       this.db.pragma("wal_checkpoint(TRUNCATE)")
@@ -406,6 +475,24 @@ function parseEnvelopeViolations(raw: unknown): string[] | undefined {
     return Array.isArray(parsed) ? parsed.filter((v) => typeof v === "string") : undefined
   } catch {
     return undefined
+  }
+}
+
+/** rowToMetric's null handling, for usageSince's narrower rows. */
+function rowToUsage(r: Record<string, unknown>): UsageRow {
+  return {
+    model: r.model as string,
+    requestModel: (r.request_model as string) ?? undefined,
+    resolvedModel: (r.resolved_model as string) ?? undefined,
+    profileId: (r.profile_id as string) ?? undefined,
+    failed: r.failed === 1,
+    inputTokens: (r.input_tokens as number) ?? undefined,
+    outputTokens: (r.output_tokens as number) ?? undefined,
+    cacheReadInputTokens: (r.cache_read_input_tokens as number) ?? undefined,
+    cacheCreationInputTokens: (r.cache_creation_input_tokens as number) ?? undefined,
+    cacheHitRate: (r.cache_hit_rate as number) ?? undefined,
+    totalDurationMs: r.total_duration_ms as number,
+    envelopeViolations: parseEnvelopeViolations(r.envelope_violations)?.length ?? 0,
   }
 }
 

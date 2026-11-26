@@ -28,18 +28,20 @@ function page(): Page {
 }
 const text = (html: string) => html.replace(/<[^>]*>/g, "")
 
-// The page's refresh() with every read failing, over the figures it last drew.
-function failingRefresh(lastData: unknown[] | null) {
+type Fetch = (url: string) => Promise<{ json(): Promise<unknown> }>
+
+// The page's refresh() over the figures it last drew; by default every read fails.
+function pageRefresh(lastData: unknown[] | null, fetch: Fetch = () => Promise.reject(new Error("fixture unavailable"))) {
   const line = (name: string) => landingHtml.match(new RegExp(`^(?:function|var) ${name}\\b.*$`, "m"))![0]
   const content = { innerHTML: "the page as last drawn" }
   const drawn: unknown[][] = []
   const source = `var periodStart=${periodStart.toString()};\n`
-    + ["moved", "span", "noteRead", "replayMarks", "viewPeriod", "readPlan"].map(line).join("\n")
+    + ["moved", "span", "noteRead", "replayMarks", "viewPeriod", "readPlan", "enterWindow"].map(line).join("\n")
     + `\nvar lastData=${JSON.stringify(lastData)};\nfunction infoPopOpen(){return false}\n`
     + landingHtml.slice(landingHtml.indexOf("async function refresh(){"), landingHtml.indexOf("function tokens(v)"))
   const refresh = new Function("document", "fetch", "render", "meridianReorder", source + "\nreturn refresh;")(
     { getElementById: () => content, querySelectorAll: () => [] },
-    () => Promise.reject(new Error("fixture unavailable")),
+    fetch,
     (...data: unknown[]) => { drawn.push(data) },
     { adopt: () => {} },
   ) as () => Promise<void>
@@ -117,14 +119,14 @@ test("time away is measured from the last good read, across failed ones", () => 
 })
 
 test("a failed read redraws the figures the page already has", async () => {
-  const f = failingRefresh(["health", "stats", "quota", "profiles"])
+  const f = pageRefresh(["health", "stats", "quota", "profiles"])
   await f.refresh()
   expect(f.drawn).toEqual([["health", "stats", "quota", "profiles"]])
   expect(f.content.innerHTML).toBe("the page as last drawn")
 })
 
 test("a failed first read says the page could not connect", async () => {
-  const f = failingRefresh(null)
+  const f = pageRefresh(null)
   await f.refresh()
   expect(f.drawn).toEqual([])
   expect(text(f.content.innerHTML)).toBe("Could not connect")
@@ -134,10 +136,10 @@ test("a calendar period's read keeps one key all day and a new one after midnigh
   const p = page()
   const noon = new Date(2026, 10, 26, 12).getTime()
   const midnight = new Date(2026, 10, 26).getTime()
-  expect(p.readPlan("today", noon)).toEqual({ key: "today" + midnight, url: "/telemetry/summary?window=" + (noon - midnight) })
+  expect(p.readPlan("today", noon)).toEqual({ key: "today" + midnight, url: "/telemetry/usage?since=" + midnight })
   expect(p.readPlan("today", noon + 2000).key).toBe("today" + midnight)
   expect(p.readPlan("today", midnight + 86400001).key).not.toBe("today" + midnight)
-  expect(p.readPlan("24h", noon)).toEqual({ key: "24h", url: "/telemetry/summary?window=86400000" })
+  expect(p.readPlan("24h", noon)).toEqual({ key: "24h", url: "/telemetry/usage?window=86400000" })
 })
 
 test("a new window forgets the last one's figures, so the jump is not a move", () => {
@@ -150,4 +152,21 @@ test("a new window forgets the last one's figures, so the jump is not a move", (
   const jump = p.trackMove("total", 300, 5_000)
   expect(p.flashClass(jump)).toBe("")
   expect(p.movedText(jump, 5_000)).toBe("")
+})
+
+test("an answer overtaken by a newer one is not drawn", async () => {
+  let release!: () => void
+  const held = new Promise<void>((resolve) => { release = resolve })
+  let healthReads = 0
+  const answer = (body: unknown) => ({ json: async () => body })
+  const f = pageRefresh(null, (url) => {
+    if (url === "/health" && ++healthReads === 1) return held.then(() => answer({}))
+    return Promise.resolve(answer({}))
+  })
+  const first = f.refresh()
+  await f.refresh()
+  expect(f.drawn.length).toBe(1)
+  release()
+  await first
+  expect(f.drawn.length).toBe(1)
 })

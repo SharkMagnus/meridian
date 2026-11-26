@@ -290,7 +290,7 @@ export function estimateRequestCostUsd(metric: RequestTokens, pricing: ModelPric
 }
 
 /** Round to micro-dollars to keep JSON output free of float noise. */
-function roundUsd(value: number): number {
+export function roundUsd(value: number): number {
   return Math.round(value * 1e6) / 1e6
 }
 
