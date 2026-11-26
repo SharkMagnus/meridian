@@ -236,6 +236,9 @@ describe("Telemetry routes", () => {
     expect((await app.fetch(new Request("http://localhost/telemetry/usage"))).status).toBe(400)
     const since = Date.now() - 40 * 86_400_000
     expect((await app.fetch(new Request(`http://localhost/telemetry/usage?since=${since}`))).status).toBe(400)
+    const future = Date.now() + 2 * 86_400_000
+    expect((await app.fetch(new Request(`http://localhost/telemetry/usage?since=${future}`))).status).toBe(400)
+    expect((await app.fetch(new Request("http://localhost/telemetry/usage?since=Infinity"))).status).toBe(400)
   })
 
   it("caps limit at 500", async () => {

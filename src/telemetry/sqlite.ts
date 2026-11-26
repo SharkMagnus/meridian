@@ -371,6 +371,9 @@ class SqliteTelemetryStore implements ITelemetryStore {
     return usageSummary(entry.totals)
   }
 
+  // ponytail: usage totals see only this process's clear()/cleanup(). Another
+  // process deleting rows (blue-green overlap with retention shorter than the
+  // window) skews them until this process's own next cleanup().
   clear(): void {
     this.usage.clear()
     try {

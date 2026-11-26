@@ -831,7 +831,7 @@ async function refresh(){
   try{
     const [health,stats,quota,profiles,routing]=await Promise.all([
       fetch('/health').then(r=>r.json()),
-      fetch(plan.url).then(r=>r.json()),
+      fetch(plan.url).then(r=>{if(!r.ok)throw new Error('usage '+r.status);return r.json()}),
       fetch('/v1/usage/quota/all').then(r=>r.json()).catch(function(){return null}),
       fetch('/profiles/list').then(r=>r.json()).catch(function(){return null}),
       fetch('/settings/api/routing').then(r=>r.json()).catch(function(){return null})

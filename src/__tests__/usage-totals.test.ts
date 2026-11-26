@@ -63,11 +63,12 @@ function expectParity(store: ITelemetryStore, since: number, slideKey?: string):
   expect(pick(got)).toEqual(pick(want))
   const profiles = Object.keys(want.costEstimate.byProfile).sort()
   expect(Object.keys(got.costEstimate.byProfile).sort()).toEqual(profiles)
-  // The summary's own rounding step; one row on a wrong tier is off by cents.
-  expect(Math.abs(got.costEstimate.totalUsd - want.costEstimate.totalUsd)).toBeLessThanOrEqual(1e-6)
+  // Just over the summary's rounding step (summation order can land on the
+  // adjacent micro-dollar); one row on a wrong tier is off by cents.
+  expect(Math.abs(got.costEstimate.totalUsd - want.costEstimate.totalUsd)).toBeLessThanOrEqual(1.5e-6)
   for (const id of profiles) {
     expect(got.costEstimate.byProfile[id]!.requests).toBe(want.costEstimate.byProfile[id]!.requests)
-    expect(Math.abs(got.costEstimate.byProfile[id]!.estimatedUsd - want.costEstimate.byProfile[id]!.estimatedUsd)).toBeLessThanOrEqual(1e-6)
+    expect(Math.abs(got.costEstimate.byProfile[id]!.estimatedUsd - want.costEstimate.byProfile[id]!.estimatedUsd)).toBeLessThanOrEqual(1.5e-6)
   }
   return got
 }

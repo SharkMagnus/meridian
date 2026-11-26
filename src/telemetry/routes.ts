@@ -97,7 +97,8 @@ export function createTelemetryRoutes(deps: TelemetryRouteDeps = {}) {
     const since = Number(c.req.query("since"))
     const windowMs = Number(c.req.query("window"))
     const start = since > 0 ? since : windowMs > 0 ? now - windowMs : Number.NaN
-    if (!(now - start <= USAGE_MAX_RANGE_MS)) return c.json({ error: "since (epoch ms) or window (ms) is required, at most 32 days back" }, 400)
+    // A day ahead covers a fast browser clock at midnight; past that, junk keys would evict live windows.
+    if (!(now - start <= USAGE_MAX_RANGE_MS && start - now <= 86_400_000)) return c.json({ error: "since (epoch ms) or window (ms) is required, at most 32 days back" }, 400)
     return c.json(telemetryStore.usageSince(start, since > 0 ? undefined : `w${windowMs}`))
   })
 

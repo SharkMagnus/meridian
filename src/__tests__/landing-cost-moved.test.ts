@@ -158,7 +158,7 @@ test("an answer overtaken by a newer one is not drawn", async () => {
   let release!: () => void
   const held = new Promise<void>((resolve) => { release = resolve })
   let healthReads = 0
-  const answer = (body: unknown) => ({ json: async () => body })
+  const answer = (body: unknown) => ({ ok: true, json: async () => body })
   const f = pageRefresh(null, (url) => {
     if (url === "/health" && ++healthReads === 1) return held.then(() => answer({}))
     return Promise.resolve(answer({}))
