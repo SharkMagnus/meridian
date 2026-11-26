@@ -8,6 +8,7 @@
 import { describe, test, expect } from "bun:test"
 import { profileFactsJs } from "../telemetry/profileFacts"
 import { landingHtml } from "../telemetry/landing"
+import { periodStart } from "../telemetry/usagePeriod"
 import { profilePageHtml } from "../telemetry/profilePage"
 
 interface Fact { label: string; value: string; tone: string; title?: string; cached?: boolean }
@@ -457,7 +458,8 @@ describe("expiry fact focus survives automatic refresh", () => {
           + profilePageHtml.slice(profilePageHtml.indexOf("function detailFactFocused()"),
             profilePageHtml.indexOf("function esc(s)", profilePageHtml.indexOf("function detailFactFocused()")))
         // refresh() records each read and replays the marks of what moved.
-        : ["lastData", "moved", "span", "noteRead", "replayMarks"]
+        : `var periodStart=${periodStart.toString()};\n`
+          + ["lastData", "moved", "span", "noteRead", "replayMarks", "viewPeriod", "readPlan", "enterWindow"]
           .map(name => landingHtml.match(new RegExp(`^(?:function|var) ${name}\\b.*$`, "m"))![0]).join("\n") + "\n"
           + landingHtml.slice(landingHtml.indexOf("function infoPopOpen(){"), landingHtml.indexOf("function profileSection(q,s,pl,h)"))
           + landingHtml.slice(landingHtml.indexOf("async function refresh(){"), landingHtml.indexOf("function tokens(v)"))

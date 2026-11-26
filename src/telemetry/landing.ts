@@ -3,8 +3,8 @@
  *
  * The at-a-glance dashboard: a short how-it-works intro, per-account cards
  * (usage + est. cost, click to switch the active profile), and a compact
- * 24h traffic strip. Site chrome (logo, nav, status) lives in the shared
- * header from profileBar.ts. Fetches /health, /telemetry/summary,
+ * traffic strip for the chosen usage period. Site chrome (logo, nav, status)
+ * lives in the shared header from profileBar.ts. Fetches /health, /telemetry/summary,
  * /v1/usage/quota/all, /profiles/list and /settings/api/routing client-side for live data.
  */
 
@@ -20,6 +20,7 @@ import { freeResetView } from "./freeResets"
 import { domPatchJs } from "./domPatch"
 import { profileCardStatusCss, profileCardStatusJs } from "./profileCardStatus"
 import { textSelectionJs } from "./textSelection"
+import { USAGE_PERIODS, periodStart } from "./usagePeriod"
 
 export const landingHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -209,7 +210,7 @@ export const landingHtml = `<!DOCTYPE html>
   .live.dead .live-dot { background: var(--red); animation: none; }
   .moved { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .moved.up { color: var(--green); }
-  /* A drop is a request leaving the 24h window, not an error: no red. */
+  /* A drop is a request leaving the rolling window or a price change, not an error: no red. */
   .flash-up { animation: flash-up 1.6s ease-out; }
   .flash-down { animation: flash-down 1.6s ease-out; }
   .stale { opacity: 0.5; }
@@ -324,17 +325,27 @@ export const landingHtml = `<!DOCTYPE html>
 function ms(v){if(v==null||v===0)return '—';return v<1000?v+'ms':(v/1000).toFixed(1)+'s'}
 function esc(s){return String(s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]})}
 function usd(v){if(v==null)return '—';if(v>0&&v<0.01)return '$'+v.toFixed(4);return '$'+v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-// One entry per figure: the total and each account card. The 24h window
-// slides, so a figure also drops as old requests leave it.
+// One entry per figure: the total and each account card. Emptied when the
+// read's window changes (a period switch, or midnight, Monday or the 1st), so
+// neither shows as a move. Last 24h slides, so a figure there also drops as
+// old requests leave it.
 var moved={},readAt=0,readOk=true,awayMs=0;
+// Inlined from src/telemetry/usagePeriod.ts, unit-tested in usage-period.test.ts.
+var USAGE_PERIODS=${JSON.stringify(USAGE_PERIODS)};
+var periodStart=${periodStart.toString()};
+var viewPeriod=${JSON.stringify(USAGE_PERIODS[0]!.id)},statsKey='',statsAt=0;
+function periodOf(id){for(var i=0;i<USAGE_PERIODS.length;i++)if(USAGE_PERIODS[i].id===id)return USAGE_PERIODS[i];return USAGE_PERIODS[0]}
+// A calendar period's key holds until rollover; the 24h one never changes.
+function readPlan(id,now){var start=periodStart(id,now);return {key:id==='24h'?id:id+start,url:'/telemetry/summary?window='+(now-start)}}
+function enterWindow(key){if(key!==statsKey){moved={};statsKey=key}}
 function span(s){return s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h'}
 // A good read after a minute without one carries everything since in one step.
 function noteRead(now,ok){readOk=ok;if(!ok)return;awayMs=readAt&&now-readAt>=60000?now-readAt:0;readAt=now}
 function trackMove(key,v,now){if(v==null)return null;var m=moved[key]||(moved[key]={seen:null,delta:0,at:0,away:0,fresh:false});m.fresh=m.seen!=null&&v!==m.seen;if(m.fresh){m.delta=v-m.seen;m.at=now;m.away=awayMs}m.seen=v;return m}
 function movedText(m,now){if(!m||!m.at)return '';var d=(m.delta<0?'−':'+')+usd(Math.abs(m.delta));if(m.away)return d+' while away '+span(Math.round(m.away/1000));var s=Math.round((now-m.at)/1000);return d+' · '+(s<2?'now':span(s)+' ago')}
-function movedHtml(m,now){var t=movedText(m,now);return t?'<span class="moved '+(m.delta<0?'down" title="An older request left the 24-hour window':'up" title="Last change of this figure')+'">'+t+'</span>':''}
+function movedHtml(m,now){var t=movedText(m,now);return t?'<span class="moved '+(m.delta<0?'down" title="An older request left the window, or a price changed':'up" title="Last change of this figure')+'">'+t+'</span>':''}
 function flashClass(m){return m&&m.fresh?(m.delta<0?' flash-down':' flash-up'):''}
-function clockHtml(now){return readOk?'<span class="live" title="Dollar figures are read every 2 s while this tab is visible. The 5h and 7d bars refresh every 30 s."><span class="live-dot"></span>live<span class="live-track"><i></i></span></span>':'<span class="live dead"><span class="live-dot"></span><span><span role="status">no answer</span> · last read '+span(Math.round((now-readAt)/1000))+' ago</span></span>'}
+function clockHtml(now){return readOk?'<span class="live" title="Dollar figures are read every 2 s (This month: every 10 s) while this tab is visible. The 5h and 7d bars refresh every 30 s."><span class="live-dot"></span>live<span class="live-track"><i></i></span></span>':'<span class="live dead"><span class="live-dot"></span><span><span role="status">no answer</span> · last read '+span(Math.round((now-readAt)/1000))+' ago</span></span>'}
 // A CSS animation runs once per class change, and the patch keeps the node, so
 // a figure that moves on two reads running would flash only the first time.
 function replayMarks(){var n=document.querySelectorAll('.live-dot,.live-track i,.flash-up,.flash-down');for(var i=0;i<n.length;i++){n[i].style.animation='none';void n[i].offsetWidth;n[i].style.animation=''}}
@@ -436,6 +447,15 @@ function sortTabs(count){
   }
   return '<div class="sort-tabs" role="group" aria-label="Sort accounts">'+out+'</div>';
 }
+function periodTabs(){
+  var out='';
+  for(var i=0;i<USAGE_PERIODS.length;i++){
+    var m=USAGE_PERIODS[i];var on=m.id===viewPeriod;
+    out+='<button type="button" class="sort-tab'+(on?' active':'')+'" data-period="'+esc(m.id)+'"'
+      +' title="'+esc(m.title)+'" aria-pressed="'+(on?'true':'false')+'">'+esc(m.label)+'</button>';
+  }
+  return '<div class="sort-tabs" role="group" aria-label="Usage period">'+out+'</div>';
+}
 
 // Re-sorting must not wait for the next 10s poll, so the last payload is
 // kept and re-rendered from memory. The choice is a view preference and is
@@ -456,6 +476,16 @@ function setViewSort(mode){
   try{localStorage.setItem(SORT_STORAGE_KEY,mode)}catch(_){/* a lost preference is not worth failing over */}
   if(lastData)render(lastData[0],lastData[1],lastData[2],lastData[3]);
   if(refocus){var el=document.querySelector('.sort-tab[data-sort="'+mode+'"]');if(el)el.focus()}
+}
+// The tabs flip at once; the figures keep their own period's label until the
+// new period's read lands.
+var PERIOD_STORAGE_KEY='meridian.usagePeriod';
+function setViewPeriod(id){
+  if(id===viewPeriod)return;
+  viewPeriod=periodOf(id).id;
+  try{localStorage.setItem(PERIOD_STORAGE_KEY,viewPeriod)}catch(_){/* a lost preference is not worth failing over */}
+  if(lastData)render(lastData[0],lastData[1],lastData[2],lastData[3]);
+  refresh();
 }
 
 ${reorderClientJs}
@@ -523,14 +553,14 @@ function pastUsage(byProfile,cards){
   return rows;
 }
 
-function pastUsageSection(rows){
+function pastUsageSection(rows,per){
   if(rows.length===0)return '';
   var items='';
   for(var i=0;i<rows.length;i++){var r=rows[i];
     items+='<div class="past-row"><span class="past-id">'+(r.id==='default'?'unattributed <span class="past-note">(served by no account)</span>':esc(r.id))+'</span>'
       +'<span class="past-req">'+r.requests+' request'+(r.requests===1?'':'s')+'</span><span class="past-cost">'+usd(r.estimatedUsd)+'</span></div>';
   }
-  return '<div class="section"><div class="section-title">Past usage · not a configured account · 24h</div><div class="past-usage">'+items+'</div></div>';
+  return '<div class="section"><div class="section-title">Past usage · not a configured account · '+esc(per)+'</div><div class="past-usage">'+items+'</div></div>';
 }
 
 function introSection(h,pl){
@@ -560,7 +590,7 @@ function introSection(h,pl){
 }
 
 // A renamed profile's traffic from before the rename is filed under its former
-// names, so the 24h line sums every name the profile has answered to.
+// names, so the card's figure sums every name the profile has answered to.
 function profileCost(byProfile,p){
   var ids=[p.id].concat((p.entry&&p.entry.aliases)||[]);var sum=null;
   for(var i=0;i<ids.length;i++){var c=byProfile[ids[i]];if(!c)continue;if(!sum)sum={requests:0,estimatedUsd:0};sum.requests+=c.requests||0;sum.estimatedUsd+=c.estimatedUsd||0}
@@ -597,6 +627,7 @@ function infoPopOpen(){
 }
 
 function profileSection(q,s,pl,h){
+  var per=periodOf(s&&s.period).label.toLowerCase();
   var byProfile=(s&&s.costEstimate&&s.costEstimate.byProfile)||{};
   var quotaByProfile={};
   var spentByProfile={};
@@ -773,7 +804,7 @@ function profileSection(q,s,pl,h){
       +cardStrip
       +'<div class="profile-head"><span class="profile-name">'+(draggable?meridianReorder.handleHtml(p.id,pos,slot.place,slot.size):'')+'<span class="prof-dot"></span>'+(p.entry?infoIcon(p.entry,p.type):'')+''+esc(p.label||p.id)+' '+meridianProviders.badgeHtml(slot.provider,'provider-pill')+badge+'</span>'
       +'<span class="profile-cost'+flashClass(costMove)+(readOk?'':' stale')+'">'+usd(cost?cost.estimatedUsd:0)+'</span></div>'
-      +'<div class="profile-sub">'+movedHtml(costMove,Date.now())+'<span class="reqs">'+(cost?cost.requests+' request'+(cost.requests===1?'':'s')+' · est. API value · 24h':'no traffic · 24h')+'</span></div>'
+      +'<div class="profile-sub">'+movedHtml(costMove,Date.now())+'<span class="reqs">'+(cost?cost.requests+' request'+(cost.requests===1?'':'s')+' · est. API value · '+per:'no traffic · '+per)+'</span></div>'
       +meridianCardStatus.updateHtml(update)+rows+'</div>';
     if(p.configured)pos++;
   }
@@ -796,15 +827,19 @@ function strip(items){
 
 async function refresh(){
   if(infoPopOpen())return;
+  var asked=viewPeriod,now=Date.now(),plan=readPlan(asked,now);
+  var reuse=!!lastData&&plan.key===statsKey&&now-statsAt<(periodOf(asked).everyMs||0);
   try{
     const [health,stats,quota,profiles,routing]=await Promise.all([
       fetch('/health').then(r=>r.json()),
-      fetch('/telemetry/summary?window=86400000').then(r=>r.json()),
+      reuse?lastData[1]:fetch(plan.url).then(r=>r.json()),
       fetch('/v1/usage/quota/all').then(r=>r.json()).catch(function(){return null}),
       fetch('/profiles/list').then(r=>r.json()).catch(function(){return null}),
       fetch('/settings/api/routing').then(r=>r.json()).catch(function(){return null})
     ]);
-    if(infoPopOpen())return;
+    // A late answer for the period just left is dropped.
+    if(infoPopOpen()||asked!==viewPeriod)return;
+    stats.period=asked;enterWindow(plan.key);if(!reuse)statsAt=now;
     meridianReorder.adopt(routing);
     noteRead(Date.now(),true);
     render(health,stats,quota,profiles);
@@ -826,14 +861,16 @@ function render(h,s,q,pl){
   var focused=document.activeElement;
   var refocusChip=focused&&focused.getAttribute?focused.getAttribute('data-provider-chip'):null;
   var refocusLoginChip=focused&&focused.getAttribute?focused.getAttribute('data-login-chip'):null;
+  var per=periodOf(s.period).label;
   let o='';
   o+=introSection(h,pl);
+  o+='<div class="section-head"><div class="section-title">Usage period</div>'+periodTabs()+'</div>';
 
   // Accounts — per-profile usage + est cost; click a card to switch
   var accounts=profileSection(q,s,pl,h);
   o+=accounts.html;
 
-  // Last 24 hours — meaningful signals only. Errors and envelope
+  // The chosen period — meaningful signals only. Errors and envelope
   // violations appear only when there is something to report.
   var tu=s.tokenUsage||{};
   var cache=tu.avgCacheHitRate!=null?Math.round(tu.avgCacheHitRate*100)+'%':'—';
@@ -847,8 +884,8 @@ function render(h,s,q,pl){
     ['Median Response',ms(s.totalDuration?.p50),'','p95 '+ms(s.totalDuration?.p95)]
   ];
   if(s.envelopeViolationCount>0)items.push(['Envelope',String(s.envelopeViolationCount),'red','wire-contract violations']);
-  o+='<div class="section"><div class="section-title">Last 24 Hours</div>'+strip(items)+'</div>';
-  o+=pastUsageSection(pastUsage((s.costEstimate&&s.costEstimate.byProfile)||{},accounts.shown));
+  o+='<div class="section"><div class="section-title">'+esc(per)+'</div>'+strip(items)+'</div>';
+  o+=pastUsageSection(pastUsage((s.costEstimate&&s.costEstimate.byProfile)||{},accounts.shown),per);
 
   o+='<div class="footer">Meridian · <a href="https://github.com/rynfar/meridian">GitHub</a> · Built on the <a href="https://github.com/anthropics/claude-agent-sdk-typescript">Claude Agent SDK</a></div>';
   // Patched in place: a find-in-page highlight, a selection and scroll survive.
@@ -893,6 +930,7 @@ document.getElementById('content').addEventListener('click',function(e){
   if(e.target.closest('a'))return;
   var tab=e.target.closest('.sort-tab');
   if(tab&&tab.dataset.sort){setViewSort(tab.dataset.sort);return}
+  if(tab&&tab.dataset.period){setViewPeriod(tab.dataset.period);return}
   // Releasing a drag-select over a card dispatches a click on it too; that
   // click finished a copy, so it is not a request to switch account.
   if(meridianSelection.live())return;
@@ -907,6 +945,7 @@ document.getElementById('content').addEventListener('keydown',function(e){
   if(card&&card.dataset.profile){e.preventDefault();switchProfile(card.dataset.profile)}
 });
 viewSort=readStoredSort()||viewSort;
+try{viewPeriod=periodOf(localStorage.getItem(PERIOD_STORAGE_KEY)).id}catch(_){/* storage blocked — the default is fine */}
 meridianReorder.init({onSaved:refresh});
 refresh();
 function pollRefresh(){

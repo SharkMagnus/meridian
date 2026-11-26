@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { runInNewContext } from "node:vm"
 import { landingHtml } from "../telemetry/landing"
+import { periodStart } from "../telemetry/usagePeriod"
 
 type Move = { delta: number } | null
 type Page = {
@@ -9,6 +10,8 @@ type Page = {
   movedText(m: Move, now: number): string
   flashClass(m: Move): string
   clockHtml(now: number): string
+  readPlan(id: string, now: number): { key: string; url: string }
+  enterWindow(key: string): void
 }
 
 // The page's own definitions, run as the browser runs them.
@@ -19,7 +22,8 @@ function page(): Page {
     return source
   }
   const context = {} as Page
-  runInNewContext(["usd", "span", "moved", "noteRead", "trackMove", "movedText", "flashClass", "clockHtml"].map(line).join("\n"), context)
+  const names = ["usd", "span", "moved", "noteRead", "trackMove", "movedText", "flashClass", "clockHtml", "viewPeriod", "readPlan", "enterWindow"]
+  runInNewContext(`var periodStart=${periodStart.toString()};\n` + names.map(line).join("\n"), context)
   return context
 }
 const text = (html: string) => html.replace(/<[^>]*>/g, "")
@@ -29,7 +33,8 @@ function failingRefresh(lastData: unknown[] | null) {
   const line = (name: string) => landingHtml.match(new RegExp(`^(?:function|var) ${name}\\b.*$`, "m"))![0]
   const content = { innerHTML: "the page as last drawn" }
   const drawn: unknown[][] = []
-  const source = ["moved", "span", "noteRead", "replayMarks"].map(line).join("\n")
+  const source = `var periodStart=${periodStart.toString()};\n`
+    + ["moved", "span", "noteRead", "replayMarks", "viewPeriod", "readPlan"].map(line).join("\n")
     + `\nvar lastData=${JSON.stringify(lastData)};\nfunction infoPopOpen(){return false}\n`
     + landingHtml.slice(landingHtml.indexOf("async function refresh(){"), landingHtml.indexOf("function tokens(v)"))
   const refresh = new Function("document", "fetch", "render", "meridianReorder", source + "\nreturn refresh;")(
@@ -123,4 +128,26 @@ test("a failed first read says the page could not connect", async () => {
   await f.refresh()
   expect(f.drawn).toEqual([])
   expect(text(f.content.innerHTML)).toBe("Could not connect")
+})
+
+test("a calendar period's read keeps one key all day and a new one after midnight", () => {
+  const p = page()
+  const noon = new Date(2026, 10, 26, 12).getTime()
+  const midnight = new Date(2026, 10, 26).getTime()
+  expect(p.readPlan("today", noon)).toEqual({ key: "today" + midnight, url: "/telemetry/summary?window=" + (noon - midnight) })
+  expect(p.readPlan("today", noon + 2000).key).toBe("today" + midnight)
+  expect(p.readPlan("today", midnight + 86400001).key).not.toBe("today" + midnight)
+  expect(p.readPlan("24h", noon)).toEqual({ key: "24h", url: "/telemetry/summary?window=86400000" })
+})
+
+test("a new window forgets the last one's figures, so the jump is not a move", () => {
+  const p = page()
+  p.noteRead(1_000, true)
+  p.enterWindow("a")
+  p.trackMove("total", 5, 1_000)
+  expect(p.flashClass(p.trackMove("total", 6, 3_000))).toBe(" flash-up")
+  p.enterWindow("b")
+  const jump = p.trackMove("total", 300, 5_000)
+  expect(p.flashClass(jump)).toBe("")
+  expect(p.movedText(jump, 5_000)).toBe("")
 })
